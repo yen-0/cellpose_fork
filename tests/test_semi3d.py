@@ -54,3 +54,14 @@ def test_main_parser_accepts_semi3d_train_flags():
     assert args.use_gpu is True
     assert args.verbose is True
     assert args.semi3d_simulate_z_dropout is True
+
+
+def test_main_parser_accepts_refiner_inference_flags():
+    parser = get_arg_parser()
+    args = parser.parse_args([
+        "--semi3d", "--semi3d_input", "/tmp/in.tif", "--semi3d_output", "/tmp/out",
+        "--semi3d_refiner_model", "/tmp/semi3d_refiner.npz", "--semi3d_refiner_threshold", "0.6"
+    ])
+    assert args.semi3d is True
+    assert args.semi3d_refiner_model.endswith("semi3d_refiner.npz")
+    assert abs(args.semi3d_refiner_threshold - 0.6) < 1e-6

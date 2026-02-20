@@ -28,6 +28,8 @@ cellpose --semi3d \
   --semi3d_input /path/to/stack.tif \
   --semi3d_output /path/to/out \
   --semi3d_pretrained_model cpsam \
+  --semi3d_refiner_model /path/to/model_out/semi3d_refiner.npz \
+  --semi3d_refiner_threshold 0.5 \
   --semi3d_max_gap 2 \
   --semi3d_min_track_len 2 \
   --semi3d_min_conf 0.05 \
@@ -46,6 +48,8 @@ cellpose --semi3d_train \
 ```
 
 Expected input format: each image stack has paired GT as either `<stem>_masks.tif` or `<stem>_seg.npy` (GUI annotation format).
+
+After training, use the generated `semi3d_refiner.npz` during inference with `--semi3d_refiner_model` to apply the learned keep/discard filter.
 
 ## Evaluation
 
@@ -83,6 +87,7 @@ Common Semi3D parameters:
 Inference-specific:
 - `--semi3d_link_iou`, `--semi3d_link_dist`, `--semi3d_size_tolerance`, `--semi3d_max_gap`
 - `--semi3d_min_track_len`, `--semi3d_min_conf`, `--semi3d_save_3d_labels`
+- `--semi3d_refiner_model`, `--semi3d_refiner_threshold`
 
 Training-specific:
 - `--semi3d_simulate_z_dropout`, `--semi3d_dropout_prob`

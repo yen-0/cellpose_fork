@@ -6,8 +6,9 @@ import numpy as np
 from cellpose import io, models
 from .linking import build_association_tracks
 from .refine import relabel_tracks
-from .training.train import run_training
+from .training.train import run_training, extract_track_features
 from .evaluation.eval import run_evaluation
+from .training.model import LinearRefiner
 
 
 def _load_stack(path):
@@ -40,6 +41,16 @@ def _run_inference(args):
         size_tolerance=args.size_tolerance,
         max_gap=args.max_gap,
     )
+
+    if args.refiner_model is not None:
+        if not os.path.exists(args.refiner_model):
+            raise FileNotFoundError(f"semi3d refiner model not found: {args.refiner_model}")
+        refiner = LinearRefiner.load(args.refiner_model)
+        if len(tracks):
+            feats = np.stack([extract_track_features(tr, stack) for tr in tracks], axis=0)
+            keep_prob = refiner.predict_proba(feats)
+            tracks = [tr for tr, p in zip(tracks, keep_prob) if p >= args.refiner_threshold]
+
     refined, labels3d, reconstructed_flags, kept = relabel_tracks(
         tracks,
         stack,
@@ -82,6 +93,8 @@ def run_from_cellpose_args(args):
             min_track_len=args.semi3d_min_track_len,
             min_conf=args.semi3d_min_conf,
             save_3d_labels=args.semi3d_save_3d_labels,
+            refiner_model=args.semi3d_refiner_model,
+            refiner_threshold=args.semi3d_refiner_threshold,
         )
         total, kept = _run_inference(semi_args)
         print(f"semi3d complete: tracks={total}, kept={kept}")

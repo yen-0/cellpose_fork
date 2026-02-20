@@ -273,6 +273,10 @@ def get_arg_parser():
                              help="minimum final track confidence")
     semi3d_args.add_argument("--semi3d_save_3d_labels", action="store_true",
                              help="save 3D z-consistent track labels for semi3d inference")
+    semi3d_args.add_argument("--semi3d_refiner_model", default=None, type=str,
+                             help="path to trained semi3d_refiner.npz for track filtering during inference")
+    semi3d_args.add_argument("--semi3d_refiner_threshold", default=0.5, type=float,
+                             help="keep threshold for trained semi3d refiner probability")
     semi3d_args.add_argument("--semi3d_simulate_z_dropout", action="store_true",
                              help="simulate z-dropout when training semi3d refiner")
     semi3d_args.add_argument("--semi3d_dropout_prob", default=0.2, type=float,
