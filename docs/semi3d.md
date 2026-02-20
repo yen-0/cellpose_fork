@@ -1,5 +1,7 @@
 # Cellpose Semi-3D Z-Connectivity Mode
 
+For a full step-by-step algorithm description, see [Semi-3D Algorithm Details](semi3d_algorithm.md).
+
 `semi3d` is a post-processing pipeline that runs regular 2D Cellpose per z-slice and then links objects across z to improve stack continuity without full 3D CNN inference.
 
 ## Algorithm overview
