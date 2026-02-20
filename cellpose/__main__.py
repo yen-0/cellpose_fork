@@ -1,7 +1,7 @@
 """
 Copyright © 2025 Howard Hughes Medical Institute, Authored by Carsen Stringer , Michael Rariden and Marius Pachitariu.
 """
-import os, time
+import os, time, sys
 import numpy as np
 from tqdm import tqdm
 from cellpose import utils, models, io, train
@@ -27,6 +27,12 @@ import logging
 def main():
     """ Run cellpose from command line
     """
+
+
+    if len(sys.argv) > 1 and sys.argv[1] in {"semi3d", "semi3d-train", "semi3d-eval"}:
+        from cellpose.semi3d import run_cli
+        run_cli(sys.argv[1:])
+        return
 
     args = get_arg_parser().parse_args()  # this has to be in a separate file for autodoc to work
 
