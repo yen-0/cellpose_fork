@@ -29,9 +29,14 @@ def main():
     """
 
 
-    if len(sys.argv) > 1 and sys.argv[1] in {"semi3d", "semi3d-train", "semi3d-eval"}:
+    semi3d_commands = {"semi3d", "semi3d-train", "semi3d-eval"}
+    semi3d_idx = next((i for i, a in enumerate(sys.argv[1:], start=1) if a in semi3d_commands), None)
+    if semi3d_idx is not None:
         from cellpose.semi3d import run_cli
-        run_cli(sys.argv[1:])
+        semi3d_argv = sys.argv[semi3d_idx:]
+        if "--verbose" in sys.argv[1:semi3d_idx] and "--verbose" not in semi3d_argv:
+            semi3d_argv.append("--verbose")
+        run_cli(semi3d_argv)
         return
 
     args = get_arg_parser().parse_args()  # this has to be in a separate file for autodoc to work

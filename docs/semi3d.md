@@ -84,7 +84,7 @@ Outputs JSON metrics including:
 - `--save-3d-labels`: save tracked instance labels across z.
 
 ### `semi3d-train`
-- `--input`, `--output`, `--pretrained_model`, `--use_gpu`, `--diameter`, `--seed`.
+- `--input`, `--output`, `--pretrained_model`, `--use_gpu`, `--diameter`, `--seed`, `--verbose`.
 - `--simulate-z-dropout`: enable simulated z-dropout augmentation.
 - `--dropout-prob`: probability of deleting GT masks per slice.
 - `--learning-rate`, `--epochs`: training hyperparameters for lightweight linear refiner.
@@ -94,3 +94,6 @@ Outputs JSON metrics including:
 - `--gt`: ground-truth stack.
 - `--output`: output directory for metric JSON.
 - `--seed`: deterministic seed.
+
+
+Note: if `semi3d` commands are reported as unrecognized, ensure you are running an installation that includes the semi3d entrypoint changes (reinstall/update the package).

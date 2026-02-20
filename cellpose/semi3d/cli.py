@@ -1,6 +1,7 @@
 import argparse
 import os
 import random
+import logging
 import numpy as np
 from cellpose import io, models
 from .linking import build_association_tracks
@@ -74,6 +75,7 @@ def build_parser():
     inf.add_argument("--min-track-len", dest="min_track_len", type=int, default=2)
     inf.add_argument("--min-conf", dest="min_conf", type=float, default=0.05)
     inf.add_argument("--save-3d-labels", action="store_true")
+    inf.add_argument("--verbose", action="store_true")
 
     tr = sub.add_parser("semi3d-train")
     tr.add_argument("--input", required=True)
@@ -86,12 +88,14 @@ def build_parser():
     tr.add_argument("--dropout-prob", type=float, default=0.2)
     tr.add_argument("--learning-rate", type=float, default=1e-2)
     tr.add_argument("--epochs", type=int, default=200)
+    tr.add_argument("--verbose", action="store_true")
 
     ev = sub.add_parser("semi3d-eval")
     ev.add_argument("--pred", required=True)
     ev.add_argument("--gt", required=True)
     ev.add_argument("--output", required=True)
     ev.add_argument("--seed", type=int, default=0)
+    ev.add_argument("--verbose", action="store_true")
 
     return p
 
@@ -99,6 +103,9 @@ def build_parser():
 def run_cli(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
+    if getattr(args, "verbose", False):
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", force=True)
+        logging.info("running semi3d command: %s", args.command)
     if args.command == "semi3d":
         total, kept = _run_inference(args)
         print(f"semi3d complete: tracks={total}, kept={kept}")
