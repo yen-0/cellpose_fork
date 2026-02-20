@@ -24,25 +24,25 @@ No extra package is required beyond Cellpose dependencies. The mode is available
 ## Inference
 
 ```bash
-cellpose semi3d \
-  --input /path/to/stack.tif \
-  --output /path/to/out \
-  --pretrained_model cpsam \
-  --max-gap 2 \
-  --min-track-len 2 \
-  --min-conf 0.05 \
-  --save-3d-labels
+cellpose --semi3d \
+  --semi3d_input /path/to/stack.tif \
+  --semi3d_output /path/to/out \
+  --semi3d_pretrained_model cpsam \
+  --semi3d_max_gap 2 \
+  --semi3d_min_track_len 2 \
+  --semi3d_min_conf 0.05 \
+  --semi3d_save_3d_labels
 ```
 
 ## Training (refinement classifier)
 
 ```bash
-cellpose semi3d-train \
-  --input /path/to/train_stacks \
-  --output /path/to/model_out \
-  --simulate-z-dropout \
-  --dropout-prob 0.2 \
-  --epochs 200
+cellpose --semi3d_train \
+  --semi3d_input /path/to/train_stacks \
+  --semi3d_output /path/to/model_out \
+  --semi3d_simulate_z_dropout \
+  --semi3d_dropout_prob 0.2 \
+  --semi3d_epochs 200
 ```
 
 Expected input format: each image stack has paired GT as either `<stem>_masks.tif` or `<stem>_seg.npy` (GUI annotation format).
@@ -50,10 +50,10 @@ Expected input format: each image stack has paired GT as either `<stem>_masks.ti
 ## Evaluation
 
 ```bash
-cellpose semi3d-eval \
-  --pred /path/to/semi3d_refined_masks.tif \
-  --gt /path/to/gt_masks.tif \
-  --output /path/to/eval_out
+cellpose --semi3d_eval \
+  --semi3d_pred /path/to/semi3d_refined_masks.tif \
+  --semi3d_gt /path/to/gt_masks.tif \
+  --semi3d_output /path/to/eval_out
 ```
 
 Inference outputs include:
@@ -70,30 +70,23 @@ Outputs JSON metrics including:
 
 ## CLI flags
 
-### `semi3d`
-- `--input`: stack file (`.tif/.tiff`) or ordered slice directory.
-- `--output`: output directory.
-- `--pretrained_model`, `--use_gpu`, `--diameter`, `--seed`.
-- `--link-iou`: minimum overlap for adjacent linking.
-- `--link-dist`: max centroid distance for linking.
-- `--size-tolerance`: minimum relative area similarity.
-- `--max-gap`: max z gap allowed when linking tracks.
-- Missing slices inside valid linked tracks are always reconstructed (no recovery/bridge gating threshold).
-- `--min-track-len`: minimum linked length to keep a track.
-- `--min-conf`: minimum final track confidence.
-- `--save-3d-labels`: save tracked instance labels across z.
+Semi3D runs through the main Cellpose parser with mode flags:
+- `--semi3d`: run inference
+- `--semi3d_train`: run refinement training
+- `--semi3d_eval`: run evaluation
 
-### `semi3d-train`
-- `--input`, `--output`, `--pretrained_model`, `--use_gpu`, `--diameter`, `--seed`, `--verbose`.
-- `--simulate-z-dropout`: enable simulated z-dropout augmentation.
-- `--dropout-prob`: probability of deleting GT masks per slice.
-- `--learning-rate`, `--epochs`: training hyperparameters for lightweight linear refiner.
+Common Semi3D parameters:
+- `--semi3d_input`, `--semi3d_output`, `--semi3d_seed`
+- `--semi3d_pretrained_model`, `--semi3d_diameter`
+- `--use_gpu`, `--verbose` (shared global flags)
 
-### `semi3d-eval`
-- `--pred`: predicted refined stack.
-- `--gt`: ground-truth stack.
-- `--output`: output directory for metric JSON.
-- `--seed`: deterministic seed.
+Inference-specific:
+- `--semi3d_link_iou`, `--semi3d_link_dist`, `--semi3d_size_tolerance`, `--semi3d_max_gap`
+- `--semi3d_min_track_len`, `--semi3d_min_conf`, `--semi3d_save_3d_labels`
 
+Training-specific:
+- `--semi3d_simulate_z_dropout`, `--semi3d_dropout_prob`
+- `--semi3d_learning_rate`, `--semi3d_epochs`
 
-Note: if `semi3d` commands are reported as unrecognized, ensure you are running an installation that includes the semi3d entrypoint changes (reinstall/update the package).
+Eval-specific:
+- `--semi3d_pred`, `--semi3d_gt`

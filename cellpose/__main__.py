@@ -1,7 +1,7 @@
 """
 Copyright © 2025 Howard Hughes Medical Institute, Authored by Carsen Stringer , Michael Rariden and Marius Pachitariu.
 """
-import os, time, sys
+import os, time
 import numpy as np
 from tqdm import tqdm
 from cellpose import utils, models, io, train
@@ -29,20 +29,16 @@ def main():
     """
 
 
-    semi3d_commands = {"semi3d", "semi3d-train", "semi3d-eval"}
-    semi3d_idx = next((i for i, a in enumerate(sys.argv[1:], start=1) if a in semi3d_commands), None)
-    if semi3d_idx is not None:
-        from cellpose.semi3d import run_cli
-        semi3d_argv = sys.argv[semi3d_idx:]
-        if "--verbose" in sys.argv[1:semi3d_idx] and "--verbose" not in semi3d_argv:
-            semi3d_argv.append("--verbose")
-        run_cli(semi3d_argv)
-        return
-
     args = get_arg_parser().parse_args()  # this has to be in a separate file for autodoc to work
 
     if args.version:
         print(version_str)
+        return
+
+
+    if args.semi3d or args.semi3d_train or args.semi3d_eval:
+        from cellpose.semi3d import run_from_cellpose_args
+        run_from_cellpose_args(args)
         return
 
     ######## if no image arguments are provided, run GUI or add model and exit ########

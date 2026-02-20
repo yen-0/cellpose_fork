@@ -3,7 +3,7 @@ import numpy as np
 from cellpose.semi3d.linking import build_association_tracks
 from cellpose.semi3d.refine import relabel_tracks
 from cellpose.semi3d.training import dataset
-from cellpose.semi3d.cli import build_parser
+from cellpose.cli import get_arg_parser
 
 
 def test_gap_tolerant_linking_and_mandatory_reconstruction():
@@ -44,11 +44,13 @@ def test_training_loader_accepts_seg_npy(monkeypatch):
     assert labels == ["/data/stack1_seg.npy"]
 
 
-def test_train_parser_accepts_verbose_and_use_gpu():
-    parser = build_parser()
+def test_main_parser_accepts_semi3d_train_flags():
+    parser = get_arg_parser()
     args = parser.parse_args([
-        "semi3d-train", "--input", "/tmp/in", "--output", "/tmp/out", "--use_gpu", "--verbose"
+        "--semi3d_train", "--semi3d_input", "/tmp/in", "--semi3d_output", "/tmp/out",
+        "--use_gpu", "--verbose", "--semi3d_simulate_z_dropout"
     ])
-    assert args.command == "semi3d-train"
+    assert args.semi3d_train is True
     assert args.use_gpu is True
     assert args.verbose is True
+    assert args.semi3d_simulate_z_dropout is True
