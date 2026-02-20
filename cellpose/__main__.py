@@ -28,10 +28,17 @@ def main():
     """ Run cellpose from command line
     """
 
+
     args = get_arg_parser().parse_args()  # this has to be in a separate file for autodoc to work
 
     if args.version:
         print(version_str)
+        return
+
+
+    if args.semi3d or args.semi3d_train or args.semi3d_eval:
+        from cellpose.semi3d import run_from_cellpose_args
+        run_from_cellpose_args(args)
         return
 
     ######## if no image arguments are provided, run GUI or add model and exit ########

@@ -237,4 +237,54 @@ def get_arg_parser():
     training_args.add_argument("--train_size", action="store_true", help=
         'Deprecated in v4.0.1+, not used. ')
 
+    # semi3d settings
+    semi3d_args = parser.add_argument_group("Semi3D Arguments")
+    semi3d_args.add_argument("--semi3d", action="store_true",
+                             help="run semi-3D inference (2D slices + z-linking/reconstruction)")
+    semi3d_args.add_argument("--semi3d_train", action="store_true",
+                             help="train semi-3D refinement classifier")
+    semi3d_args.add_argument("--semi3d_eval", action="store_true",
+                             help="evaluate semi-3D outputs")
+    semi3d_args.add_argument("--semi3d_input", default=None, type=str,
+                             help="input stack path or stack directory for semi3d/semi3d_train")
+    semi3d_args.add_argument("--semi3d_output", default=None, type=str,
+                             help="output directory for semi3d modes")
+    semi3d_args.add_argument("--semi3d_pred", default=None, type=str,
+                             help="predicted stack path for semi3d_eval")
+    semi3d_args.add_argument("--semi3d_gt", default=None, type=str,
+                             help="ground-truth stack path for semi3d_eval")
+    semi3d_args.add_argument("--semi3d_pretrained_model", default="cpsam", type=str,
+                             help="pretrained model for semi3d inference/training")
+    semi3d_args.add_argument("--semi3d_diameter", default=None, type=float,
+                             help="diameter used during per-slice 2D inference")
+    semi3d_args.add_argument("--semi3d_seed", default=0, type=int,
+                             help="deterministic seed for semi3d modes")
+    semi3d_args.add_argument("--semi3d_link_iou", default=0.1, type=float,
+                             help="minimum overlap for adjacent linking")
+    semi3d_args.add_argument("--semi3d_link_dist", default=30.0, type=float,
+                             help="max centroid distance for linking")
+    semi3d_args.add_argument("--semi3d_size_tolerance", default=0.6, type=float,
+                             help="minimum relative area similarity for linking")
+    semi3d_args.add_argument("--semi3d_max_gap", default=2, type=int,
+                             help="max z gap allowed in track linking")
+    semi3d_args.add_argument("--semi3d_min_track_len", default=2, type=int,
+                             help="minimum linked length to keep a track")
+    semi3d_args.add_argument("--semi3d_min_conf", default=0.05, type=float,
+                             help="minimum final track confidence")
+    semi3d_args.add_argument("--semi3d_save_3d_labels", action="store_true",
+                             help="save 3D z-consistent track labels for semi3d inference")
+    semi3d_args.add_argument("--semi3d_refiner_model", default=None, type=str,
+                             help="path to trained semi3d_refiner.npz for track filtering during inference")
+    semi3d_args.add_argument("--semi3d_refiner_threshold", default=0.5, type=float,
+                             help="keep threshold for trained semi3d refiner probability")
+    semi3d_args.add_argument("--semi3d_simulate_z_dropout", action="store_true",
+                             help="simulate z-dropout when training semi3d refiner")
+    semi3d_args.add_argument("--semi3d_dropout_prob", default=0.2, type=float,
+                             help="dropout probability for z-dropout simulation")
+    semi3d_args.add_argument("--semi3d_learning_rate", default=1e-2, type=float,
+                             help="learning rate for semi3d refiner")
+    semi3d_args.add_argument("--semi3d_epochs", default=200, type=int,
+                             help="training epochs for semi3d refiner")
+
+
     return parser
