@@ -2,6 +2,7 @@ import numpy as np
 
 from cellpose.semi3d.linking import build_association_tracks
 from cellpose.semi3d.refine import relabel_tracks
+from cellpose.semi3d.training import dataset
 
 
 def test_gap_tolerant_linking_and_mandatory_reconstruction():
@@ -19,3 +20,24 @@ def test_gap_tolerant_linking_and_mandatory_reconstruction():
     assert len(kept) == 1
     assert np.any(refined[1] > 0)
     assert np.any(reconstructed_flags[1] > 0)
+
+
+def test_training_loader_accepts_seg_npy(monkeypatch):
+    fake_dir = "/data"
+
+    def fake_listdir(_):
+        return ["stack1.tif", "stack2.tif", "stack1_seg.npy"]
+
+    def fake_exists(path):
+        return path.endswith("stack1_seg.npy")
+
+    def fake_imread(path):
+        return path
+
+    monkeypatch.setattr(dataset.os, "listdir", fake_listdir)
+    monkeypatch.setattr(dataset.os.path, "exists", fake_exists)
+    monkeypatch.setattr(dataset.io, "imread", fake_imread)
+
+    images, labels = dataset.load_stacks(fake_dir)
+    assert images == ["/data/stack1.tif"]
+    assert labels == ["/data/stack1_seg.npy"]

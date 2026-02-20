@@ -45,7 +45,7 @@ cellpose semi3d-train \
   --epochs 200
 ```
 
-Expected input format: each image stack has paired GT mask stack named `<stem>_masks.tif`.
+Expected input format: each image stack has paired GT as either `<stem>_masks.tif` or `<stem>_seg.npy` (GUI annotation format).
 
 ## Evaluation
 
