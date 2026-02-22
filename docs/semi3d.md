@@ -91,7 +91,7 @@ Inference-specific:
 - `--semi3d_min_track_len`, `--semi3d_min_conf`, `--semi3d_save_3d_labels`
 - `--semi3d_refiner_model`, `--semi3d_refiner_threshold`
 - `--semi3d_use_prob_occupancy`, `--semi3d_prob_occupancy_thresh`
-- fog-aware occupancy knobs: `--semi3d_prob_foggy_floor`, `--semi3d_prob_foggy_fraction`, `--semi3d_prob_foggy_thresh`
+- stage1 probability de-fog knobs: `--semi3d_disable_stage1_prob_defog`, `--semi3d_stage1_prob_bg_percentile`, `--semi3d_stage1_prob_hi_percentile`, `--semi3d_stage1_prob_gamma`
 
 Training-specific:
 - `--semi3d_simulate_z_dropout`, `--semi3d_dropout_prob`
@@ -206,7 +206,7 @@ cellpose --semi3d_stage2 \
   --semi3d_stage1_prob /path/to/out/semi3d_stage1_prob.tif \
   --semi3d_fill_edges \
   --semi3d_use_prob_occupancy --semi3d_prob_occupancy_thresh 0.5 \
-  --semi3d_prob_foggy_floor 0.15 --semi3d_prob_foggy_fraction 0.10 --semi3d_prob_foggy_thresh 0.35 \
+  --semi3d_stage1_prob_bg_percentile 35 --semi3d_stage1_prob_hi_percentile 99 --semi3d_stage1_prob_gamma 1.2 \
   --semi3d_recon_min_free_fraction 0.25 \
   --semi3d_refiner_model /path/to/model_out/semi3d_refiner.npz \
   --semi3d_refiner_threshold 0.5 \

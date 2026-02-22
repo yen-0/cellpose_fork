@@ -50,8 +50,7 @@ def recover_track_gaps(track, image_stack, flow_stack=None, fill_edges=False, so
 
 def relabel_tracks(tracks, image_stack, flow_stack=None, min_track_len=2, min_conf=0.05,
                    fill_edges=False, return_track_labels=True, source_masks=None, avoid_occupied=True, min_free_fraction=0.25,
-                   prob_stack=None, prob_occupancy_thresh=0.5,
-                   prob_foggy_floor=0.15, prob_foggy_fraction=0.10, prob_foggy_thresh=0.35):
+                   prob_stack=None, prob_occupancy_thresh=0.5):
     zcount = len(image_stack)
     out = [np.zeros(image_stack[0].shape[:2], dtype=np.int32) for _ in range(zcount)]
     track_labels = np.zeros((zcount, *image_stack[0].shape[:2]), dtype=np.int32) if return_track_labels else None
@@ -104,12 +103,7 @@ def relabel_tracks(tracks, image_stack, flow_stack=None, min_track_len=2, min_co
             # optional probability occupancy prior from stage1 cellprob
             if prob_stack is not None:
                 pz = prob_stack[z]
-                # Fog-aware mode: if a meaningful fraction of pixels are in a low-confidence
-                # "fog" band, trust those regions more by lowering the occupancy threshold.
-                foggy_ratio = float(np.mean(pz >= prob_foggy_floor))
-                occ_thresh = prob_foggy_thresh if foggy_ratio >= prob_foggy_fraction else prob_occupancy_thresh
-                occ_thresh = float(min(prob_occupancy_thresh, occ_thresh))
-                m_use = np.logical_and(m_use, pz < occ_thresh)
+                m_use = np.logical_and(m_use, pz < prob_occupancy_thresh)
 
             if avoid_occupied:
                 frac = m_use.sum() / (m.sum() + 1e-6)

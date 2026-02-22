@@ -78,6 +78,22 @@ def _extract_debug_maps(flows):
         prob_slice = p
     return flow_slice, flow_mag, prob_slice
 
+
+
+def _defog_probability(prob_slice, bg_percentile=35.0, hi_percentile=99.0, gamma=1.2):
+    p = np.asarray(prob_slice, dtype=np.float32)
+    if p.ndim > 2:
+        p = np.squeeze(p)
+    bg = float(np.percentile(p, bg_percentile))
+    hi = float(np.percentile(p, hi_percentile))
+    if hi <= bg + 1e-6:
+        return np.clip(p, 0.0, 1.0)
+    q = (p - bg) / (hi - bg + 1e-6)
+    q = np.clip(q, 0.0, 1.0)
+    if gamma != 1.0:
+        q = np.power(q, float(gamma), dtype=np.float32)
+    return q.astype(np.float32)
+
 def _run_stage1(args):
     np.random.seed(args.seed)
     random.seed(args.seed)
@@ -98,6 +114,13 @@ def _run_stage1(args):
         flow_slice, flow_mag, prob_slice = _extract_debug_maps(flows)
         per_slice_flows.append(flow_slice)
         per_slice_flow_mag.append(flow_mag)
+        if prob_slice is not None and getattr(args, "stage1_defog_prob", True):
+            prob_slice = _defog_probability(
+                prob_slice,
+                bg_percentile=getattr(args, "stage1_prob_bg_percentile", 35.0),
+                hi_percentile=getattr(args, "stage1_prob_hi_percentile", 99.0),
+                gamma=getattr(args, "stage1_prob_gamma", 1.2),
+            )
         per_slice_prob.append(prob_slice)
         LOGGER.info("[semi3d:stage1] slice %d/%d", z + 1, stack.shape[0])
 
@@ -211,9 +234,6 @@ def _run_stage2(args):
         min_free_fraction=args.recon_min_free_fraction,
         prob_stack=stage1_prob if args.use_prob_occupancy else None,
         prob_occupancy_thresh=args.prob_occupancy_thresh,
-        prob_foggy_floor=args.prob_foggy_floor,
-        prob_foggy_fraction=args.prob_foggy_fraction,
-        prob_foggy_thresh=args.prob_foggy_thresh,
     )
 
     refined_stack = np.stack(refined, axis=0).astype(np.int32)
@@ -274,9 +294,10 @@ def run_from_cellpose_args(args):
             stage1_prob=args.semi3d_stage1_prob,
             use_prob_occupancy=args.semi3d_use_prob_occupancy,
             prob_occupancy_thresh=args.semi3d_prob_occupancy_thresh,
-            prob_foggy_floor=args.semi3d_prob_foggy_floor,
-            prob_foggy_fraction=args.semi3d_prob_foggy_fraction,
-            prob_foggy_thresh=args.semi3d_prob_foggy_thresh,
+            stage1_defog_prob=not args.semi3d_disable_stage1_prob_defog,
+            stage1_prob_bg_percentile=args.semi3d_stage1_prob_bg_percentile,
+            stage1_prob_hi_percentile=args.semi3d_stage1_prob_hi_percentile,
+            stage1_prob_gamma=args.semi3d_stage1_prob_gamma,
         )
         total, kept = _run_inference(semi_args)
         print(f"semi3d complete: tracks={total}, kept={kept}")
@@ -297,9 +318,10 @@ def run_from_cellpose_args(args):
             stage1_prob=args.semi3d_stage1_prob,
             use_prob_occupancy=args.semi3d_use_prob_occupancy,
             prob_occupancy_thresh=args.semi3d_prob_occupancy_thresh,
-            prob_foggy_floor=args.semi3d_prob_foggy_floor,
-            prob_foggy_fraction=args.semi3d_prob_foggy_fraction,
-            prob_foggy_thresh=args.semi3d_prob_foggy_thresh,
+            stage1_defog_prob=not args.semi3d_disable_stage1_prob_defog,
+            stage1_prob_bg_percentile=args.semi3d_stage1_prob_bg_percentile,
+            stage1_prob_hi_percentile=args.semi3d_stage1_prob_hi_percentile,
+            stage1_prob_gamma=args.semi3d_stage1_prob_gamma,
         )
         path = _run_stage1(semi_args)
         print(f"semi3d stage1 complete: {path}")
@@ -333,9 +355,10 @@ def run_from_cellpose_args(args):
             stage1_prob=args.semi3d_stage1_prob,
             use_prob_occupancy=args.semi3d_use_prob_occupancy,
             prob_occupancy_thresh=args.semi3d_prob_occupancy_thresh,
-            prob_foggy_floor=args.semi3d_prob_foggy_floor,
-            prob_foggy_fraction=args.semi3d_prob_foggy_fraction,
-            prob_foggy_thresh=args.semi3d_prob_foggy_thresh,
+            stage1_defog_prob=not args.semi3d_disable_stage1_prob_defog,
+            stage1_prob_bg_percentile=args.semi3d_stage1_prob_bg_percentile,
+            stage1_prob_hi_percentile=args.semi3d_stage1_prob_hi_percentile,
+            stage1_prob_gamma=args.semi3d_stage1_prob_gamma,
         )
         total, kept = _run_stage2(semi_args)
         print(f"semi3d stage2 complete: tracks={total}, kept={kept}")

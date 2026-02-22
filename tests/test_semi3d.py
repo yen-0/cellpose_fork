@@ -99,7 +99,7 @@ def test_main_parser_accepts_stage_flags():
     args = parser.parse_args([
         "--semi3d_stage2", "--semi3d_input", "/tmp/in.tif", "--semi3d_output", "/tmp/out",
         "--semi3d_stage1_masks", "/tmp/semi3d_stage1_masks.tif", "--semi3d_fill_edges",
-        "--semi3d_memmap_stage2_inputs", "--semi3d_stage2_use_gpu", "--semi3d_link_gpu_prefilter", "--semi3d_merge_dist", "10", "--semi3d_recon_min_free_fraction", "0.3", "--semi3d_save_debug_tiff", "--semi3d_use_prob_occupancy", "--semi3d_prob_occupancy_thresh", "0.55", "--semi3d_prob_foggy_floor", "0.2", "--semi3d_prob_foggy_fraction", "0.12", "--semi3d_prob_foggy_thresh", "0.4", "--semi3d_refiner_batch_size", "32"
+        "--semi3d_memmap_stage2_inputs", "--semi3d_stage2_use_gpu", "--semi3d_link_gpu_prefilter", "--semi3d_merge_dist", "10", "--semi3d_recon_min_free_fraction", "0.3", "--semi3d_save_debug_tiff", "--semi3d_use_prob_occupancy", "--semi3d_prob_occupancy_thresh", "0.55", "--semi3d_stage1_prob_bg_percentile", "30", "--semi3d_stage1_prob_hi_percentile", "98", "--semi3d_stage1_prob_gamma", "1.1", "--semi3d_refiner_batch_size", "32"
     ])
     assert args.semi3d_stage2 is True
     assert args.semi3d_fill_edges is True
@@ -111,9 +111,9 @@ def test_main_parser_accepts_stage_flags():
     assert args.semi3d_save_debug_tiff is True
     assert args.semi3d_use_prob_occupancy is True
     assert abs(args.semi3d_prob_occupancy_thresh - 0.55) < 1e-6
-    assert abs(args.semi3d_prob_foggy_floor - 0.2) < 1e-6
-    assert abs(args.semi3d_prob_foggy_fraction - 0.12) < 1e-6
-    assert abs(args.semi3d_prob_foggy_thresh - 0.4) < 1e-6
+    assert abs(args.semi3d_stage1_prob_bg_percentile - 30.0) < 1e-6
+    assert abs(args.semi3d_stage1_prob_hi_percentile - 98.0) < 1e-6
+    assert abs(args.semi3d_stage1_prob_gamma - 1.1) < 1e-6
     assert args.semi3d_refiner_batch_size == 32
 
 
