@@ -150,7 +150,7 @@ Useful flags:
 
 ### Filling first and last slices
 
-Use `--semi3d_fill_edges` during `--semi3d` or `--semi3d_stage2` to propagate valid track masks to boundary slices.
+Use `--semi3d_fill_edges` during `--semi3d` or `--semi3d_stage2` to run boundary reconstruction on first/last slices using nearest valid track masks as priors (with image/flow refinement).
 
 
 ### Stage2 launching note

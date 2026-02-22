@@ -1,5 +1,5 @@
 import numpy as np
-from .interpolation import interpolate_missing_mask
+from .interpolation import interpolate_missing_mask, refine_mask_with_slice
 from .confidence import track_confidence
 
 
@@ -31,10 +31,19 @@ def recover_track_gaps(track, image_stack, flow_stack=None, fill_edges=False, so
         first, last = nodes[0], nodes[-1]
         first_src = None if source_masks is None else source_masks[first.z]
         last_src = None if source_masks is None else source_masks[last.z]
+
+        # Run reconstruction-like refinement on boundary slices using nearest observed mask as prior.
+        first_prior = _node_mask(first, image_stack[0].shape[:2], slice_mask=first_src)
         for z in range(0, first.z):
-            recoveries.append((z, _node_mask(first, image_stack[0].shape[:2], slice_mask=first_src).copy(), 0.5, True))
+            flow_slice = None if flow_stack is None else flow_stack[z]
+            mask_hat = refine_mask_with_slice(first_prior, image_stack[z], flow_slice=flow_slice)
+            recoveries.append((z, mask_hat, 0.5, True))
+
+        last_prior = _node_mask(last, image_stack[0].shape[:2], slice_mask=last_src)
         for z in range(last.z + 1, len(image_stack)):
-            recoveries.append((z, _node_mask(last, image_stack[0].shape[:2], slice_mask=last_src).copy(), 0.5, True))
+            flow_slice = None if flow_stack is None else flow_stack[z]
+            mask_hat = refine_mask_with_slice(last_prior, image_stack[z], flow_slice=flow_slice)
+            recoveries.append((z, mask_hat, 0.5, True))
 
     return recoveries
 
