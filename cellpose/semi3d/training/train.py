@@ -1,4 +1,5 @@
 import os
+import json
 import numpy as np
 from cellpose import models
 from .dataset import load_stacks
@@ -104,8 +105,21 @@ def run_training(args):
         clf = NonLinearRefiner(n_features=x_train.shape[1], hidden_dim=getattr(args, "refiner_hidden_dim", 16))
     else:
         clf = LinearRefiner(n_features=x_train.shape[1])
-    clf.fit(x_train, y_train, lr=args.learning_rate, epochs=args.epochs)
+    losses = clf.fit(x_train, y_train, lr=args.learning_rate, epochs=args.epochs)
     os.makedirs(args.output, exist_ok=True)
     out_path = os.path.join(args.output, "semi3d_refiner.npz")
     clf.save(out_path)
+
+    best_epoch = int(np.argmin(losses)) + 1 if len(losses) else 0
+    best_loss = float(np.min(losses)) if len(losses) else None
+    log = {"loss_per_epoch": [float(v) for v in losses], "best_epoch": best_epoch, "best_loss": best_loss}
+    with open(os.path.join(args.output, "semi3d_refiner_train_log.json"), "w", encoding="utf-8") as f:
+        json.dump(log, f, indent=2)
+
+    if getattr(args, "verbose", False):
+        for i, loss in enumerate(losses, start=1):
+            print(f"[semi3d:train] epoch {i}/{len(losses)} loss={loss:.6f}")
+        if best_loss is not None:
+            print(f"[semi3d:train] best epoch={best_epoch} loss={best_loss:.6f}")
+
     return out_path, len(x_train)

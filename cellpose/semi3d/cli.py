@@ -328,6 +328,7 @@ def run_from_cellpose_args(args):
             epochs=args.semi3d_epochs,
             refiner_nonlinear=not args.semi3d_refiner_linear,
             refiner_hidden_dim=args.semi3d_refiner_hidden_dim,
+            verbose=args.verbose,
         )
         path, n = run_training(semi_args)
         print(f"semi3d training complete: samples={n}, model={path}")

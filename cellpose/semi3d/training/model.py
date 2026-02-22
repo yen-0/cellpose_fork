@@ -1,6 +1,11 @@
 import numpy as np
 
 
+def _bce_loss(p, y):
+    p = np.clip(p, 1e-6, 1 - 1e-6)
+    return float(-np.mean(y * np.log(p) + (1 - y) * np.log(1 - p)))
+
+
 class LinearRefiner:
     def __init__(self, n_features=5):
         self.w = np.zeros(n_features, dtype=np.float32)
@@ -11,11 +16,26 @@ class LinearRefiner:
         return 1.0 / (1.0 + np.exp(-z))
 
     def fit(self, x, y, lr=1e-2, epochs=200):
+        losses = []
+        best_loss = float("inf")
+        best_w = self.w.copy()
+        best_b = float(self.b)
         for _ in range(epochs):
             p = self.predict_proba(x)
+            loss = _bce_loss(p, y)
+            losses.append(loss)
+            if loss < best_loss:
+                best_loss = loss
+                best_w = self.w.copy()
+                best_b = float(self.b)
+
             grad = p - y
             self.w -= lr * (x.T @ grad) / len(x)
             self.b -= lr * float(np.mean(grad))
+
+        self.w = best_w
+        self.b = best_b
+        return losses
 
     def save(self, path):
         np.savez(path, model_type="linear", w=self.w, b=self.b)
@@ -47,8 +67,17 @@ class NonLinearRefiner:
         return p
 
     def fit(self, x, y, lr=1e-2, epochs=200):
+        losses = []
+        best_loss = float("inf")
+        best_state = (self.w1.copy(), self.b1.copy(), self.w2.copy(), float(self.b2))
         for _ in range(epochs):
             h, p = self._forward(x)
+            loss = _bce_loss(p, y)
+            losses.append(loss)
+            if loss < best_loss:
+                best_loss = loss
+                best_state = (self.w1.copy(), self.b1.copy(), self.w2.copy(), float(self.b2))
+
             dz = (p - y) / len(x)
             grad_w2 = h.T @ dz
             grad_b2 = float(np.sum(dz))
@@ -61,6 +90,9 @@ class NonLinearRefiner:
             self.b2 -= lr * grad_b2
             self.w1 -= lr * grad_w1.astype(np.float32)
             self.b1 -= lr * grad_b1.astype(np.float32)
+
+        self.w1, self.b1, self.w2, self.b2 = best_state
+        return losses
 
     def save(self, path):
         np.savez(path, model_type="nonlinear", w1=self.w1, b1=self.b1, w2=self.w2, b2=self.b2)

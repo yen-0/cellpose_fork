@@ -51,7 +51,7 @@ cellpose --semi3d_train \
 
 Expected input format: each image stack has paired GT as either `<stem>_masks.tif` or `<stem>_seg.npy` (GUI annotation format).
 
-After training, use the generated `semi3d_refiner.npz` during inference with `--semi3d_refiner_model` to apply the learned keep/discard filter.
+After training, use the generated `semi3d_refiner.npz` during inference with `--semi3d_refiner_model` to apply the learned keep/discard filter. Training also saves `semi3d_refiner_train_log.json` with per-epoch loss and best epoch.
 
 ## Evaluation
 
@@ -167,3 +167,8 @@ Refiner features now include overlap-conflict signals between tracks (same-slice
 ### Occupancy safety behavior
 
 With default settings, both direct track assignments and reconstructed masks are clipped to free pixels only, so already-confirmed territory is not overwritten. Tracks are applied in descending confidence order.
+
+
+### Refiner retraining note
+
+If you change linking/reconstruction settings (merge distance, overlap/occupancy rules, gap behavior), retraining the refiner is strongly recommended because feature distributions shift.
