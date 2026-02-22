@@ -33,6 +33,15 @@ def interpolate_mask_prior(prev_mask: np.ndarray, next_mask: np.ndarray, alpha: 
     return sdf_mid < 0
 
 
+
+
+def _node_binary_mask(node, shape, slice_mask=None):
+    if hasattr(node, "mask"):
+        return node.mask
+    if hasattr(node, "full_mask"):
+        return node.full_mask(shape, slice_mask=slice_mask)
+    raise AttributeError("node does not provide mask/full_mask")
+
 def _flow_to_vector(flow_slice: np.ndarray):
     if flow_slice is None:
         return None
@@ -98,10 +107,12 @@ def refine_mask_with_slice(
     return work > 0
 
 
-def interpolate_missing_mask(prev_node, next_node, z_target: int, image_slice: np.ndarray, flow_slice: np.ndarray = None):
+def interpolate_missing_mask(prev_node, next_node, z_target: int, image_slice: np.ndarray, flow_slice: np.ndarray = None, prev_slice_mask: np.ndarray = None, next_slice_mask: np.ndarray = None):
     span = max(1, next_node.z - prev_node.z)
     alpha = (z_target - prev_node.z) / span
-    prior = interpolate_mask_prior(prev_node.mask, next_node.mask, alpha)
+    prev_mask = _node_binary_mask(prev_node, image_slice.shape[:2], slice_mask=prev_slice_mask)
+    next_mask = _node_binary_mask(next_node, image_slice.shape[:2], slice_mask=next_slice_mask)
+    prior = interpolate_mask_prior(prev_mask, next_mask, alpha)
     refined = refine_mask_with_slice(prior, image_slice, flow_slice=flow_slice)
 
     raw = _to_gray(image_slice)

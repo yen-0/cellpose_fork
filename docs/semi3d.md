@@ -97,3 +97,49 @@ Training-specific:
 
 Eval-specific:
 - `--semi3d_pred`, `--semi3d_gt`
+
+## Proposed improvements (planning)
+
+The current Semi-3D pipeline is performing well, but there are two high-impact opportunities:
+
+### 1) Reduce memory footprint without changing outputs
+
+- **Stream slices in chunks instead of holding full-stack intermediates**: process z in windows (for example 16–64 slices), carry only boundary track state between windows, and flush temporary per-slice tensors/masks after linking.
+- **Store sparse object features, not full dense masks, during association**: keep bbox, centroid, area, and compact run-length encoding (RLE) for candidates; only materialize dense masks when reconstructing or writing final outputs.
+- **Use low-precision buffers where safe**: convert non-critical float arrays (distance/intensity helper maps) to `float16` and labels to minimal integer dtypes (`uint16`/`int32` fallback).
+- **Lazy-write optional outputs**: gate and defer expensive arrays (`semi3d_track_labels.tif`, reconstruction flags) behind explicit flags and write incrementally slice-by-slice.
+- **Memory profiling checkpoints in pipeline stages**: add timing + RSS/VRAM snapshots around segmentation, linking, reconstruction, and refinement to identify the dominant peak before/after each optimization.
+
+### 2) Count and score two-slice skips explicitly
+
+- **Promote gap-length awareness from binary to multi-class**: treat links as `direct (gap=0)`, `single-skip (gap=1)`, and `double-skip (gap=2)` rather than only rewarding one skipped slice.
+- **Update confidence features**: add dedicated counters and ratios for `gap=1` and `gap=2` bridges so double-skip recovery contributes positively when geometrically consistent.
+- **Rebalance penalties by skip length instead of hard rejection**: allow `gap=2` links with stricter IoU/shape constraints and stronger (but finite) penalty, instead of effectively dropping them.
+- **Train refiner with synthetic 2-skip dropout examples**: extend z-dropout simulation to include contiguous two-slice removals so the learned model recognizes valid longer-gap recoveries.
+- **Expose skip-aware metrics in evaluation**: report precision/recall for recovered `gap=1` and `gap=2` events separately, plus a weighted continuity score to reflect practical improvements.
+
+### Suggested execution order
+
+1. Add skip-aware metrics and diagnostics first (so improvements are measurable).
+2. Implement chunked processing + sparse representation for memory reduction.
+3. Add explicit `gap=2` link scoring and training augmentation.
+4. Re-tune thresholds using eval outputs split by gap length.
+
+
+## Two-stage execution
+
+You can now run Semi-3D in two explicit endpoints:
+
+1. `--semi3d_stage1`: run per-slice Cellpose inference, optional border instance cleanup, and save intermediate masks.
+2. `--semi3d_stage2`: load stage1 masks and run linking/reconstruction/refinement.
+
+Useful flags:
+- `--semi3d_stage1_masks` (preferred TIFF), `--semi3d_stage1_flows`
+- `--semi3d_memmap_stage2_inputs` (memory-map masks in stage2)
+- `--semi3d_stage2_use_gpu` (GPU refiner scoring in stage2)
+- `--semi3d_link_gpu_prefilter` (hybrid GPU prefilter for linking)
+- `--semi3d_border_exclusion_px`
+- `--semi3d_fill_edges` (fills first/last slices too)
+- `--semi3d_max_gap` (supports 2+ skips)
+- `--use_gpu` for accelerated stage1 inference
+- `--semi3d_refiner_linear` to force linear model; nonlinear refiner is default

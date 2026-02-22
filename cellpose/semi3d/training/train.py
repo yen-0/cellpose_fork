@@ -3,7 +3,7 @@ import numpy as np
 from cellpose import models
 from .dataset import load_stacks
 from .augment import simulate_z_dropout
-from .model import LinearRefiner
+from .model import LinearRefiner, NonLinearRefiner
 from ..linking import build_association_tracks
 from ..confidence import track_confidence
 
@@ -53,7 +53,10 @@ def run_training(args):
 
     x_train = np.concatenate(xs, axis=0)
     y_train = np.concatenate(ys, axis=0)
-    clf = LinearRefiner(n_features=x_train.shape[1])
+    if getattr(args, "refiner_nonlinear", True):
+        clf = NonLinearRefiner(n_features=x_train.shape[1], hidden_dim=getattr(args, "refiner_hidden_dim", 16))
+    else:
+        clf = LinearRefiner(n_features=x_train.shape[1])
     clf.fit(x_train, y_train, lr=args.learning_rate, epochs=args.epochs)
     os.makedirs(args.output, exist_ok=True)
     out_path = os.path.join(args.output, "semi3d_refiner.npz")
