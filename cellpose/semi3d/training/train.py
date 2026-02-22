@@ -18,17 +18,10 @@ def _node_mask(node, shape, source_masks=None):
     raise AttributeError("node does not provide mask/full_mask")
 
 
-def _extract_prob_from_flows(flows):
-    if isinstance(flows, (list, tuple)) and len(flows) > 2:
-        p = np.asarray(flows[2]).astype(np.float32)
-        return np.squeeze(p)
-    return None
-
-
-def _local_patch_stats(mask, image_slice, prob_slice=None, patch_radius=16):
+def _local_patch_stats(mask, image_slice, patch_radius=16):
     ys, xs = np.where(mask)
     if ys.size == 0:
-        return 0.0, 0.0, 0.0
+        return 0.0
     cy, cx = int(np.mean(ys)), int(np.mean(xs))
     y0 = max(0, cy - patch_radius)
     y1 = min(mask.shape[0], cy + patch_radius + 1)
@@ -44,13 +37,7 @@ def _local_patch_stats(mask, image_slice, prob_slice=None, patch_radius=16):
     outside = p_im[~p_mask]
     contrast = float((inside.mean() - outside.mean()) / (p_im.std() + 1e-6)) if inside.size and outside.size else 0.0
 
-    if prob_slice is None:
-        return contrast, 0.0, 0.0
-    p_prob = prob_slice[y0:y1, x0:x1].astype(np.float32)
-    prob_in = float(p_prob[p_mask].mean()) if np.any(p_mask) else 0.0
-    ring = np.logical_and(~p_mask, (p_prob > 0))
-    prob_ring = float(p_prob[ring].mean()) if np.any(ring) else 0.0
-    return contrast, prob_in, prob_ring
+    return contrast
 
 
 def _track_conflict_features(track, tracks, image_shape, source_masks=None):
@@ -84,19 +71,16 @@ def _track_conflict_features(track, tracks, image_shape, source_masks=None):
     return overlap_mean, conflict_ratio
 
 
-def extract_track_features(track, image_stack, source_masks=None, all_tracks=None, prob_stack=None, patch_radius=16):
+def extract_track_features(track, image_stack, source_masks=None, all_tracks=None, patch_radius=16):
     overlap_mean, conflict_ratio = (0.0, 0.0)
     if all_tracks is not None:
         overlap_mean, conflict_ratio = _track_conflict_features(track, all_tracks, image_stack[0].shape[:2], source_masks=source_masks)
 
-    contrasts, probs_in, probs_ring = [], [], []
+    contrasts = []
     for n in track.nodes:
         m = _node_mask(n, image_stack[0].shape[:2], source_masks=source_masks)
-        pz = None if prob_stack is None else prob_stack[n.z]
-        c, pin, pr = _local_patch_stats(m, image_stack[n.z], prob_slice=pz, patch_radius=patch_radius)
+        c = _local_patch_stats(m, image_stack[n.z], patch_radius=patch_radius)
         contrasts.append(c)
-        probs_in.append(pin)
-        probs_ring.append(pr)
 
     return np.array([
         len(track.nodes),
@@ -107,8 +91,6 @@ def extract_track_features(track, image_stack, source_masks=None, all_tracks=Non
         overlap_mean,
         conflict_ratio,
         float(np.mean(contrasts)) if contrasts else 0.0,
-        float(np.mean(probs_in)) if probs_in else 0.0,
-        float(np.mean(probs_ring)) if probs_ring else 0.0,
     ], dtype=np.float32)
 
 
@@ -122,7 +104,7 @@ def _shift_mask(mask, dy, dx):
     return out
 
 
-def _synthetic_refiner_samples(image_stack, gt_stack, prob_stack=None, seed=0, n_per_obj=6):
+def _synthetic_refiner_samples(image_stack, gt_stack, seed=0, n_per_obj=6):
     rng = np.random.default_rng(seed)
     xs, ys = [], []
     for z in range(gt_stack.shape[0]):
@@ -140,26 +122,26 @@ def _synthetic_refiner_samples(image_stack, gt_stack, prob_stack=None, seed=0, n
                 iou_t = float(inter_t / (union_t + 1e-6))
                 overlap_others = float(np.logical_and(prop, others).sum() / (prop.sum() + 1e-6))
                 conflict_ratio = 1.0 if np.logical_and(prop, others).any() else 0.0
-                c, pin, pr = _local_patch_stats(prop, image_stack[z], prob_slice=None if prob_stack is None else prob_stack[z], patch_radius=16)
-                feat = np.array([1.0, iou_t, 0.0, 0.0, max(0.0, iou_t), overlap_others, conflict_ratio, c, pin, pr], dtype=np.float32)
+                c = _local_patch_stats(prop, image_stack[z], patch_radius=16)
+                feat = np.array([1.0, iou_t, 0.0, 0.0, max(0.0, iou_t), overlap_others, conflict_ratio, c], dtype=np.float32)
                 label = 1.0 if (iou_t > 0.6 and overlap_others < 0.05) else 0.0
                 xs.append(feat); ys.append(label)
     if not xs:
-        return np.zeros((0, 10), dtype=np.float32), np.zeros((0,), dtype=np.float32)
+        return np.zeros((0, 8), dtype=np.float32), np.zeros((0,), dtype=np.float32)
     return np.stack(xs), np.array(ys, dtype=np.float32)
 
 
-def _extract_features_and_labels(image_stack, gt_stack, pred_stack, prob_stack=None):
+def _extract_features_and_labels(image_stack, gt_stack, pred_stack):
     tracks = build_association_tracks(pred_stack)
     x, y = [], []
     gt_present = np.array([np.any(g > 0) for g in gt_stack], dtype=np.float32)
     for tr in tracks:
         zmin, zmax = tr.nodes[0].z, tr.nodes[-1].z
         support = float(gt_present[zmin:zmax + 1].mean())
-        x.append(extract_track_features(tr, image_stack, source_masks=pred_stack, all_tracks=tracks, prob_stack=prob_stack))
+        x.append(extract_track_features(tr, image_stack, source_masks=pred_stack, all_tracks=tracks))
         y.append(1.0 if support > 0.3 else 0.0)
     if not x:
-        return np.zeros((0, 10), dtype=np.float32), np.zeros((0,), dtype=np.float32)
+        return np.zeros((0, 8), dtype=np.float32), np.zeros((0,), dtype=np.float32)
     return np.stack(x), np.array(y, dtype=np.float32)
 
 
@@ -170,19 +152,16 @@ def run_training(args):
     model = models.CellposeModel(gpu=args.use_gpu, pretrained_model=args.pretrained_model)
 
     xs, ys = [], []
-    use_prob = getattr(args, "train_use_prob", True)
     for i, (img, gt) in enumerate(zip(images, gts)):
         if args.simulate_z_dropout:
             gt = simulate_z_dropout(gt, dropout_prob=args.dropout_prob, seed=args.seed + i)
-        pred, prob_stack = [], []
+        pred = []
         for z in range(img.shape[0]):
-            masks, flows, *_ = model.eval(img[z], do_3D=False, diameter=args.diameter)
+            masks, *_ = model.eval(img[z], do_3D=False, diameter=args.diameter)
             pred.append(masks.astype(np.int32))
-            prob_stack.append(_extract_prob_from_flows(flows) if use_prob else None)
-        prob_stack = None if not use_prob else np.stack([np.zeros_like(pred[0], dtype=np.float32) if p is None else p for p in prob_stack], axis=0)
 
-        x, y = _extract_features_and_labels(img, gt, pred, prob_stack=prob_stack)
-        sx, sy = _synthetic_refiner_samples(img, gt, prob_stack=prob_stack, seed=args.seed + i, n_per_obj=getattr(args, "synthetic_per_obj", 6))
+        x, y = _extract_features_and_labels(img, gt, pred)
+        sx, sy = _synthetic_refiner_samples(img, gt, seed=args.seed + i, n_per_obj=getattr(args, "synthetic_per_obj", 6))
         if len(x):
             xs.append(x); ys.append(y)
         if len(sx):
