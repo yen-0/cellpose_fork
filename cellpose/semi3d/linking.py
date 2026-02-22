@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 import numpy as np
+import cv2
 
 
 @dataclass
@@ -11,9 +12,9 @@ class InstanceNode:
     centroid: np.ndarray
     area: int
     mask_crop: Optional[np.ndarray] = None
+    contours: Optional[List[np.ndarray]] = None  # polygon approximation (local crop coords)
 
     def compact(self):
-        """Drop dense mask crop when no longer needed for active linking."""
         self.mask_crop = None
 
     def full_mask(self, shape: Tuple[int, int], slice_mask: Optional[np.ndarray] = None) -> np.ndarray:
@@ -28,13 +29,13 @@ class InstanceNode:
         return out
 
 
-@dataclass
-class Track:
-    track_id: int
-    nodes: List[InstanceNode] = field(default_factory=list)
-    links: List[float] = field(default_factory=list)
-    gap_bridges: int = 0
-    gap_hist: Dict[int, int] = field(default_factory=dict)
+def _extract_contours(mask_crop: np.ndarray) -> List[np.ndarray]:
+    cnts, _ = cv2.findContours(mask_crop.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    out = []
+    for c in cnts:
+        eps = 0.01 * cv2.arcLength(c, True)
+        out.append(cv2.approxPolyDP(c, eps, True))
+    return out
 
 
 def _node_mask_crop(node: InstanceNode, slice_mask: Optional[np.ndarray] = None):
@@ -44,12 +45,6 @@ def _node_mask_crop(node: InstanceNode, slice_mask: Optional[np.ndarray] = None)
         raise ValueError("slice_mask required for compacted node")
     y0, y1, x0, x1 = node.bbox
     return (slice_mask[y0:y1, x0:x1] == node.instance_id)
-
-
-def _bbox_overlap(a: InstanceNode, b: InstanceNode) -> bool:
-    ay0, ay1, ax0, ax1 = a.bbox
-    by0, by1, bx0, bx1 = b.bbox
-    return (max(ay0, by0) < min(ay1, by1)) and (max(ax0, bx0) < min(ax1, bx1))
 
 
 def _node_iou(node_a: InstanceNode, node_b: InstanceNode, slice_mask_a: Optional[np.ndarray] = None, slice_mask_b: Optional[np.ndarray] = None) -> float:
@@ -69,6 +64,49 @@ def _node_iou(node_a: InstanceNode, node_b: InstanceNode, slice_mask_a: Optional
     return float(inter / union) if union > 0 else 0.0
 
 
+def _polygon_similarity(node_a: InstanceNode, node_b: InstanceNode) -> float:
+    # contour-based similarity, independent of bbox-overlap hard gate
+    if not node_a.contours or not node_b.contours:
+        return 0.0
+    c1 = max(node_a.contours, key=cv2.contourArea)
+    c2 = max(node_b.contours, key=cv2.contourArea)
+    try:
+        # lower is better; convert to [0,1]
+        d = cv2.matchShapes(c1, c2, cv2.CONTOURS_MATCH_I1, 0.0)
+        return float(1.0 / (1.0 + d))
+    except Exception:
+        return 0.0
+
+
+def _merge_nodes(nodes: List[InstanceNode]) -> InstanceNode:
+    z = nodes[0].z
+    ids = [n.instance_id for n in nodes]
+    y0 = min(n.bbox[0] for n in nodes)
+    y1 = max(n.bbox[1] for n in nodes)
+    x0 = min(n.bbox[2] for n in nodes)
+    x1 = max(n.bbox[3] for n in nodes)
+    merged = np.zeros((y1 - y0, x1 - x0), dtype=bool)
+    for n in nodes:
+        ny0, ny1, nx0, nx1 = n.bbox
+        m = _node_mask_crop(n)
+        merged[ny0 - y0:ny1 - y0, nx0 - x0:nx1 - x0] |= m
+    ys, xs = np.where(merged)
+    if ys.size:
+        centroid = np.array([ys.mean() + y0, xs.mean() + x0], dtype=np.float32)
+    else:
+        centroid = np.array([0.0, 0.0], dtype=np.float32)
+    node = InstanceNode(
+        z=z,
+        instance_id=int(min(ids)),
+        bbox=(y0, y1, x0, x1),
+        centroid=centroid,
+        area=int(merged.sum()),
+        mask_crop=merged,
+        contours=_extract_contours(merged),
+    )
+    return node
+
+
 def _extract_nodes_for_slice(slice_mask: np.ndarray, z: int) -> List[InstanceNode]:
     nodes: List[InstanceNode] = []
     ids = np.unique(slice_mask)
@@ -82,7 +120,7 @@ def _extract_nodes_for_slice(slice_mask: np.ndarray, z: int) -> List[InstanceNod
         crop = (slice_mask[y0:y1, x0:x1] == inst_id)
         centroid = np.array([ys.mean(), xs.mean()], dtype=np.float32)
         nodes.append(InstanceNode(z=z, instance_id=int(inst_id), bbox=(y0, y1, x0, x1), centroid=centroid,
-                                  area=int(crop.sum()), mask_crop=crop))
+                                  area=int(crop.sum()), mask_crop=crop, contours=_extract_contours(crop)))
     return nodes
 
 
@@ -106,7 +144,7 @@ def _query_neighbors(node: InstanceNode, grid, cell_size: float):
     return out
 
 
-def _gpu_prefilter_candidates(active: List[Track], current_nodes: List[InstanceNode], link_dist: float, size_tolerance: float):
+def _gpu_prefilter_candidates(active, current_nodes, link_dist, size_tolerance):
     try:
         import torch
         if not torch.cuda.is_available() or len(active) == 0 or len(current_nodes) == 0:
@@ -129,21 +167,14 @@ def _gpu_prefilter_candidates(active: List[Track], current_nodes: List[InstanceN
         return None
 
 
-def build_association_tracks(
-    slice_masks,
-    link_iou: float = 0.1,
-    link_dist: float = 30.0,
-    size_tolerance: float = 0.6,
-    max_gap: int = 3,
-    gpu_prefilter: bool = False,
-):
+def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tolerance=0.6,
+                             max_gap=3, gpu_prefilter=False, merge_dist=12.0):
     tracks: List[Track] = []
     active: List[Track] = []
     next_track_id = 1
 
     for z in range(len(slice_masks)):
-        current_slice = slice_masks[z]
-        current_nodes = _extract_nodes_for_slice(current_slice, z)
+        current_nodes = _extract_nodes_for_slice(slice_masks[z], z)
         used = set()
 
         grid, cs = _build_spatial_grid(current_nodes, link_dist)
@@ -153,10 +184,7 @@ def build_association_tracks(
             last = tr.nodes[-1]
             if z - last.z > max_gap:
                 continue
-            if gpu_candidates is not None:
-                candidate_idx = gpu_candidates.get(ai, [])
-            else:
-                candidate_idx = _query_neighbors(last, grid, cs)
+            candidate_idx = gpu_candidates.get(ai, []) if gpu_candidates is not None else _query_neighbors(last, grid, cs)
 
             best = None
             best_score = -1e9
@@ -167,28 +195,39 @@ def build_association_tracks(
                 gap = node.z - last.z
                 if gap < 1 or gap > max_gap:
                     continue
-
-                # scoring cascade: cheap -> expensive
                 dist = np.linalg.norm(node.centroid - last.centroid)
                 if dist > link_dist:
                     continue
                 area_ratio = min(last.area, node.area) / max(last.area, node.area)
                 if area_ratio < (size_tolerance * (1.0 - min(0.3, 0.08 * (gap - 1)))):
                     continue
-                if not _bbox_overlap(last, node):
-                    continue
+                poly_sim = _polygon_similarity(last, node)
                 iou = _node_iou(last, node)
-                if iou < link_iou and gap == 1:
+                if iou < link_iou and gap == 1 and poly_sim < 0.45:
                     continue
-
-                score = iou + 0.5 * area_ratio - 0.01 * dist - 0.03 * (gap - 1)
+                score = iou + 0.5 * area_ratio - 0.01 * dist - 0.03 * (gap - 1) + 0.1 * poly_sim
                 if score > best_score:
                     best_score = score
                     best = (i, node, iou, gap)
 
             if best is not None:
                 idx, node, iou, gap = best
-                # track-state compaction: older nodes drop dense mask
+                merge_nodes = [node]
+                if gap == 1:
+                    for j in candidate_idx:
+                        if j in used or j == idx:
+                            continue
+                        n2 = current_nodes[j]
+                        if np.linalg.norm(n2.centroid - node.centroid) <= merge_dist:
+                            test = _merge_nodes([node, n2])
+                            merged_iou = _node_iou(last, test)
+                            if merged_iou >= iou - 0.02:
+                                merge_nodes.append(n2)
+                                used.add(j)
+                    if len(merge_nodes) > 1:
+                        node = _merge_nodes(merge_nodes)
+                        iou = _node_iou(last, node)
+
                 last.compact()
                 tr.nodes.append(node)
                 tr.links.append(iou)
@@ -208,3 +247,12 @@ def build_association_tracks(
         active = [t for t in active if z - t.nodes[-1].z < max_gap]
 
     return tracks
+
+
+@dataclass
+class Track:
+    track_id: int
+    nodes: List[InstanceNode] = field(default_factory=list)
+    links: List[float] = field(default_factory=list)
+    gap_bridges: int = 0
+    gap_hist: Dict[int, int] = field(default_factory=dict)

@@ -138,8 +138,14 @@ Useful flags:
 - `--semi3d_memmap_stage2_inputs` (memory-map masks in stage2)
 - `--semi3d_stage2_use_gpu` (GPU refiner scoring in stage2)
 - `--semi3d_link_gpu_prefilter` (hybrid GPU prefilter for linking)
+- `--semi3d_merge_dist` (merge split detections of the same cell within a slice)
 - `--semi3d_border_exclusion_px`
 - `--semi3d_fill_edges` (fills first/last slices too)
 - `--semi3d_max_gap` (supports 2+ skips)
 - `--use_gpu` for accelerated stage1 inference
 - `--semi3d_refiner_linear` to force linear model; nonlinear refiner is default
+
+
+### Filling first and last slices
+
+Use `--semi3d_fill_edges` during `--semi3d` or `--semi3d_stage2` to propagate valid track masks to boundary slices.

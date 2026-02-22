@@ -125,6 +125,7 @@ def _run_stage2(args):
         size_tolerance=args.size_tolerance,
         max_gap=args.max_gap,
         gpu_prefilter=args.link_gpu_prefilter,
+        merge_dist=args.merge_dist,
     )
 
     if args.refiner_model is not None:
@@ -199,6 +200,7 @@ def run_from_cellpose_args(args):
             stage2_use_gpu=args.semi3d_stage2_use_gpu,
             memmap_stage2_inputs=args.semi3d_memmap_stage2_inputs,
             link_gpu_prefilter=args.semi3d_link_gpu_prefilter,
+            merge_dist=args.semi3d_merge_dist,
         )
         total, kept = _run_inference(semi_args)
         print(f"semi3d complete: tracks={total}, kept={kept}")
@@ -241,6 +243,7 @@ def run_from_cellpose_args(args):
             stage2_use_gpu=args.semi3d_stage2_use_gpu,
             memmap_stage2_inputs=args.semi3d_memmap_stage2_inputs,
             link_gpu_prefilter=args.semi3d_link_gpu_prefilter,
+            merge_dist=args.semi3d_merge_dist,
         )
         total, kept = _run_stage2(semi_args)
         print(f"semi3d stage2 complete: tracks={total}, kept={kept}")
