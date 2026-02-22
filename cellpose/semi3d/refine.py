@@ -63,11 +63,16 @@ def relabel_tracks(tracks, image_stack, flow_stack=None, min_track_len=2, min_co
             continue
         kept.append((tr, conf))
 
+    # highest-confidence linked tracks claim territory first
     kept = sorted(kept, key=lambda x: x[1], reverse=True)
 
+    # pass 1: place only directly linked node masks and lock them
+    locked_direct = [np.zeros(image_stack[0].shape[:2], dtype=bool) for _ in range(zcount)]
+    track_to_tid = {}
     for tr, _ in kept:
         tid = next_id
         next_id += 1
+        track_to_tid[id(tr)] = tid
         for n in tr.nodes:
             src = None if source_masks is None else source_masks[n.z]
             nmask = _node_mask(n, image_stack[0].shape[:2], slice_mask=src)
@@ -78,21 +83,33 @@ def relabel_tracks(tracks, image_stack, flow_stack=None, min_track_len=2, min_co
             if not np.any(nmask_use):
                 continue
             out[n.z][nmask_use] = tid
+            locked_direct[n.z][nmask_use] = True
             if track_labels is not None:
                 track_labels[n.z][nmask_use] = tid
+
+    # pass 2: reconstruction strictly limited to non-occupied / non-locked territory
+    for tr, _ in kept:
+        tid = track_to_tid[id(tr)]
         for z, m, _, _ in recover_track_gaps(tr, image_stack, flow_stack=flow_stack, fill_edges=fill_edges, source_masks=source_masks):
-            if m is not None and np.any(m):
-                m_use = m
-                if avoid_occupied:
-                    free = out[z] == 0
-                    kept_pix = np.logical_and(m, free)
-                    frac = kept_pix.sum() / (m.sum() + 1e-6)
-                    if frac < min_free_fraction:
-                        continue
-                    m_use = kept_pix
-                out[z][m_use] = tid
-                if track_labels is not None:
-                    track_labels[z][m_use] = tid
-                reconstructed_flags[z][m_use] = 1
+            if m is None or not np.any(m):
+                continue
+
+            m_use = m
+            # reconstruction can only happen in NOT OCCUPIED TERRITORIES
+            free = out[z] == 0
+            not_locked = np.logical_not(locked_direct[z])
+            m_use = np.logical_and(m_use, np.logical_and(free, not_locked))
+
+            if avoid_occupied:
+                frac = m_use.sum() / (m.sum() + 1e-6)
+                if frac < min_free_fraction:
+                    continue
+
+            if not np.any(m_use):
+                continue
+            out[z][m_use] = tid
+            if track_labels is not None:
+                track_labels[z][m_use] = tid
+            reconstructed_flags[z][m_use] = 1
 
     return out, track_labels, reconstructed_flags, kept

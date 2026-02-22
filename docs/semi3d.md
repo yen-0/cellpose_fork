@@ -172,3 +172,8 @@ With default settings, both direct track assignments and reconstructed masks are
 ### Refiner retraining note
 
 If you change linking/reconstruction settings (merge distance, overlap/occupancy rules, gap behavior), retraining the refiner is strongly recommended because feature distributions shift.
+
+
+### Strict occupancy rule
+
+With default behavior, reconstruction is forbidden from writing into territories already claimed by linked track assignments. Direct linked claims are locked first, then reconstruction is applied only on remaining free pixels.
