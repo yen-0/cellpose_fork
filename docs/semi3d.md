@@ -93,7 +93,8 @@ Inference-specific:
 
 Training-specific:
 - `--semi3d_simulate_z_dropout`, `--semi3d_dropout_prob`
-- `--semi3d_learning_rate`, `--semi3d_epochs`, `--semi3d_synthetic_per_obj`
+- `--semi3d_learning_rate`, `--semi3d_epochs`, `--semi3d_synthetic_per_obj`, `--semi3d_refiner_batch_size`
+- `--semi3d_no_train_use_prob` (default uses cellpose probability maps for refiner training)
 
 Eval-specific:
 - `--semi3d_pred`, `--semi3d_gt`
@@ -183,3 +184,43 @@ With default behavior, reconstruction is forbidden from writing into territories
 ### Refiner training data generation
 
 Training now augments GT with synthetic distorted/displaced target masks and overlap-with-other-cell conflict samples (impossible territory examples) so the refiner learns to reject placements that invade already-occupied regions.
+
+
+## Exact commands (copy/paste)
+
+### Stage1
+```bash
+cellpose --semi3d_stage1 \
+  --semi3d_input /path/to/stack.tif \
+  --semi3d_output /path/to/out \
+  --semi3d_pretrained_model cpsam --use_gpu --verbose
+```
+
+### Stage2 with strict occupancy + probability prior
+```bash
+cellpose --semi3d_stage2 \
+  --semi3d_input /path/to/stack.tif \
+  --semi3d_output /path/to/out \
+  --semi3d_stage1_masks /path/to/out/semi3d_stage1_masks.tif \
+  --semi3d_stage1_prob /path/to/out/semi3d_stage1_prob.tif \
+  --semi3d_fill_edges \
+  --semi3d_use_prob_occupancy --semi3d_prob_occupancy_thresh 0.5 \
+  --semi3d_recon_min_free_fraction 0.25 \
+  --semi3d_refiner_model /path/to/model_out/semi3d_refiner.npz \
+  --semi3d_refiner_threshold 0.5 \
+  --semi3d_save_debug_tiff --verbose
+```
+
+### Refiner training (prob-on by default, minibatch)
+```bash
+cellpose --semi3d_train \
+  --semi3d_input /path/to/train_stacks \
+  --semi3d_output /path/to/model_out \
+  --semi3d_pretrained_model cpsam \
+  --semi3d_simulate_z_dropout --semi3d_dropout_prob 0.2 \
+  --semi3d_synthetic_per_obj 6 --semi3d_refiner_batch_size 64 \
+  --semi3d_epochs 200 --use_gpu --verbose
+```
+
+# Optional: disable probability features in training
+# add --semi3d_no_train_use_prob

@@ -15,23 +15,33 @@ class LinearRefiner:
         z = x @ self.w + self.b
         return 1.0 / (1.0 + np.exp(-z))
 
-    def fit(self, x, y, lr=1e-2, epochs=200):
+    def fit(self, x, y, lr=1e-2, epochs=200, batch_size=64):
         losses = []
         best_loss = float("inf")
         best_w = self.w.copy()
         best_b = float(self.b)
+        n = len(x)
         for _ in range(epochs):
-            p = self.predict_proba(x)
-            loss = _bce_loss(p, y)
+            order = np.random.permutation(n)
+            x_e = x[order]
+            y_e = y[order]
+            batch_losses = []
+            for i in range(0, n, max(1, batch_size)):
+                xb = x_e[i:i+batch_size]
+                yb = y_e[i:i+batch_size]
+                p = self.predict_proba(xb)
+                batch_losses.append(_bce_loss(p, yb))
+                grad = p - yb
+                self.w -= lr * (xb.T @ grad) / len(xb)
+                self.b -= lr * float(np.mean(grad))
+
+            p_all = self.predict_proba(x)
+            loss = _bce_loss(p_all, y)
             losses.append(loss)
             if loss < best_loss:
                 best_loss = loss
                 best_w = self.w.copy()
                 best_b = float(self.b)
-
-            grad = p - y
-            self.w -= lr * (x.T @ grad) / len(x)
-            self.b -= lr * float(np.mean(grad))
 
         self.w = best_w
         self.b = best_b
@@ -66,30 +76,38 @@ class NonLinearRefiner:
         _, p = self._forward(x)
         return p
 
-    def fit(self, x, y, lr=1e-2, epochs=200):
+    def fit(self, x, y, lr=1e-2, epochs=200, batch_size=64):
         losses = []
         best_loss = float("inf")
         best_state = (self.w1.copy(), self.b1.copy(), self.w2.copy(), float(self.b2))
+        n = len(x)
         for _ in range(epochs):
-            h, p = self._forward(x)
-            loss = _bce_loss(p, y)
+            order = np.random.permutation(n)
+            x_e = x[order]
+            y_e = y[order]
+            for i in range(0, n, max(1, batch_size)):
+                xb = x_e[i:i+batch_size]
+                yb = y_e[i:i+batch_size]
+                h, p = self._forward(xb)
+                dz = (p - yb) / len(xb)
+                grad_w2 = h.T @ dz
+                grad_b2 = float(np.sum(dz))
+                dh = np.outer(dz, self.w2)
+                da = dh * (1.0 - h * h)
+                grad_w1 = xb.T @ da
+                grad_b1 = np.sum(da, axis=0)
+
+                self.w2 -= lr * grad_w2.astype(np.float32)
+                self.b2 -= lr * grad_b2
+                self.w1 -= lr * grad_w1.astype(np.float32)
+                self.b1 -= lr * grad_b1.astype(np.float32)
+
+            _, p_all = self._forward(x)
+            loss = _bce_loss(p_all, y)
             losses.append(loss)
             if loss < best_loss:
                 best_loss = loss
                 best_state = (self.w1.copy(), self.b1.copy(), self.w2.copy(), float(self.b2))
-
-            dz = (p - y) / len(x)
-            grad_w2 = h.T @ dz
-            grad_b2 = float(np.sum(dz))
-            dh = np.outer(dz, self.w2)
-            da = dh * (1.0 - h * h)
-            grad_w1 = x.T @ da
-            grad_b1 = np.sum(da, axis=0)
-
-            self.w2 -= lr * grad_w2.astype(np.float32)
-            self.b2 -= lr * grad_b2
-            self.w1 -= lr * grad_w1.astype(np.float32)
-            self.b1 -= lr * grad_b1.astype(np.float32)
 
         self.w1, self.b1, self.w2, self.b2 = best_state
         return losses
