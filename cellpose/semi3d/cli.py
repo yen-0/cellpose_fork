@@ -105,13 +105,13 @@ def _run_stage1(args):
     io.imsave(masks_path, np.stack(per_slice_masks, axis=0).astype(np.int32))
     if args.save_flows:
         np.save(os.path.join(args.output, "semi3d_stage1_flows.npy"), np.array(per_slice_flows, dtype=object), allow_pickle=True)
+    if any(p is not None for p in per_slice_prob):
+        prob_stack = np.stack([np.zeros_like(per_slice_masks[0], dtype=np.float32) if p is None else p.astype(np.float32) for p in per_slice_prob], axis=0)
+        io.imsave(os.path.join(args.output, "semi3d_stage1_prob.tif"), prob_stack)
     if getattr(args, "save_debug_tiff", False):
         if any(f is not None for f in per_slice_flow_mag):
             flow_mag_stack = np.stack([np.zeros_like(per_slice_masks[0], dtype=np.float32) if f is None else f.astype(np.float32) for f in per_slice_flow_mag], axis=0)
             io.imsave(os.path.join(args.output, "semi3d_stage1_flow_mag.tif"), flow_mag_stack)
-        if any(p is not None for p in per_slice_prob):
-            prob_stack = np.stack([np.zeros_like(per_slice_masks[0], dtype=np.float32) if p is None else p.astype(np.float32) for p in per_slice_prob], axis=0)
-            io.imsave(os.path.join(args.output, "semi3d_stage1_prob.tif"), prob_stack)
     LOGGER.info("[semi3d:stage1] complete -> %s", masks_path)
     return masks_path
 
@@ -166,6 +166,10 @@ def _run_stage2(args):
     if args.stage1_flows and os.path.exists(args.stage1_flows):
         # object arrays cannot be memory-mapped safely; load only when explicitly provided.
         per_slice_flows = np.load(args.stage1_flows, allow_pickle=True)
+    stage1_prob = None
+    prob_path = args.stage1_prob if getattr(args, "stage1_prob", None) else os.path.join(args.output, "semi3d_stage1_prob.tif")
+    if os.path.exists(prob_path):
+        stage1_prob = io.imread(prob_path).astype(np.float32)
 
     LOGGER.info("[semi3d:stage2] linking tracks")
     tracks = build_association_tracks(
@@ -205,6 +209,8 @@ def _run_stage2(args):
         source_masks=per_slice_masks,
         avoid_occupied=not args.allow_overlap_recon,
         min_free_fraction=args.recon_min_free_fraction,
+        prob_stack=stage1_prob if args.use_prob_occupancy else None,
+        prob_occupancy_thresh=args.prob_occupancy_thresh,
     )
 
     refined_stack = np.stack(refined, axis=0).astype(np.int32)
@@ -221,6 +227,7 @@ def _run_inference(args):
     stage2_args = SimpleNamespace(**vars(args))
     stage2_args.stage1_masks = masks_path
     stage2_args.stage1_flows = os.path.join(args.output, "semi3d_stage1_flows.npy") if args.save_flows else None
+    stage2_args.stage1_prob = os.path.join(args.output, "semi3d_stage1_prob.tif")
     return _run_stage2(stage2_args)
 
 
@@ -261,6 +268,9 @@ def run_from_cellpose_args(args):
             allow_overlap_recon=args.semi3d_allow_overlap_recon,
             recon_min_free_fraction=args.semi3d_recon_min_free_fraction,
             save_debug_tiff=args.semi3d_save_debug_tiff,
+            stage1_prob=args.semi3d_stage1_prob,
+            use_prob_occupancy=args.semi3d_use_prob_occupancy,
+            prob_occupancy_thresh=args.semi3d_prob_occupancy_thresh,
         )
         total, kept = _run_inference(semi_args)
         print(f"semi3d complete: tracks={total}, kept={kept}")
@@ -278,6 +288,9 @@ def run_from_cellpose_args(args):
             border_exclusion_px=args.semi3d_border_exclusion_px,
             save_flows=args.semi3d_save_flows,
             save_debug_tiff=args.semi3d_save_debug_tiff,
+            stage1_prob=args.semi3d_stage1_prob,
+            use_prob_occupancy=args.semi3d_use_prob_occupancy,
+            prob_occupancy_thresh=args.semi3d_prob_occupancy_thresh,
         )
         path = _run_stage1(semi_args)
         print(f"semi3d stage1 complete: {path}")
@@ -308,6 +321,9 @@ def run_from_cellpose_args(args):
             allow_overlap_recon=args.semi3d_allow_overlap_recon,
             recon_min_free_fraction=args.semi3d_recon_min_free_fraction,
             save_debug_tiff=args.semi3d_save_debug_tiff,
+            stage1_prob=args.semi3d_stage1_prob,
+            use_prob_occupancy=args.semi3d_use_prob_occupancy,
+            prob_occupancy_thresh=args.semi3d_prob_occupancy_thresh,
         )
         total, kept = _run_stage2(semi_args)
         print(f"semi3d stage2 complete: tracks={total}, kept={kept}")
@@ -328,6 +344,7 @@ def run_from_cellpose_args(args):
             epochs=args.semi3d_epochs,
             refiner_nonlinear=not args.semi3d_refiner_linear,
             refiner_hidden_dim=args.semi3d_refiner_hidden_dim,
+            synthetic_per_obj=args.semi3d_synthetic_per_obj,
             verbose=args.verbose,
         )
         path, n = run_training(semi_args)

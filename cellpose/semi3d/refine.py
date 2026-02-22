@@ -49,7 +49,8 @@ def recover_track_gaps(track, image_stack, flow_stack=None, fill_edges=False, so
 
 
 def relabel_tracks(tracks, image_stack, flow_stack=None, min_track_len=2, min_conf=0.05,
-                   fill_edges=False, return_track_labels=True, source_masks=None, avoid_occupied=True, min_free_fraction=0.25):
+                   fill_edges=False, return_track_labels=True, source_masks=None, avoid_occupied=True, min_free_fraction=0.25,
+                   prob_stack=None, prob_occupancy_thresh=0.5):
     zcount = len(image_stack)
     out = [np.zeros(image_stack[0].shape[:2], dtype=np.int32) for _ in range(zcount)]
     track_labels = np.zeros((zcount, *image_stack[0].shape[:2]), dtype=np.int32) if return_track_labels else None
@@ -99,6 +100,10 @@ def relabel_tracks(tracks, image_stack, flow_stack=None, min_track_len=2, min_co
             free = out[z] == 0
             not_locked = np.logical_not(locked_direct[z])
             m_use = np.logical_and(m_use, np.logical_and(free, not_locked))
+            # optional probability occupancy prior from stage1 cellprob
+            if prob_stack is not None:
+                pz = prob_stack[z]
+                m_use = np.logical_and(m_use, pz < prob_occupancy_thresh)
 
             if avoid_occupied:
                 frac = m_use.sum() / (m.sum() + 1e-6)

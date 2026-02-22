@@ -80,6 +80,60 @@ def _extract_features_and_labels(image_stack, gt_stack, pred_stack):
     return np.stack(x), np.array(y, dtype=np.float32)
 
 
+
+
+def _shift_mask(mask, dy, dx):
+    out = np.zeros_like(mask)
+    y0 = max(0, dy); y1 = mask.shape[0] + min(0, dy)
+    x0 = max(0, dx); x1 = mask.shape[1] + min(0, dx)
+    sy0 = max(0, -dy); sy1 = sy0 + (y1 - y0)
+    sx0 = max(0, -dx); sx1 = sx0 + (x1 - x0)
+    out[y0:y1, x0:x1] = mask[sy0:sy1, sx0:sx1]
+    return out
+
+
+def _synthetic_refiner_samples(image_stack, gt_stack, seed=0, n_per_obj=6):
+    rng = np.random.default_rng(seed)
+    xs, ys = [], []
+    for z in range(gt_stack.shape[0]):
+        gt = gt_stack[z]
+        ids = np.unique(gt)
+        ids = ids[ids > 0]
+        for inst_id in ids:
+            target = (gt == inst_id)
+            others = (gt > 0) & (~target)
+            for _ in range(n_per_obj):
+                dy = int(rng.integers(-6, 7))
+                dx = int(rng.integers(-6, 7))
+                prop = _shift_mask(target, dy, dx)
+                # mild morphology perturbation
+                if rng.random() < 0.5:
+                    prop = np.pad(prop.astype(np.uint8), 1, mode='constant')
+                    prop = prop[1:-1,1:-1] > 0
+                inter_t = np.logical_and(prop, target).sum()
+                union_t = np.logical_or(prop, target).sum()
+                iou_t = float(inter_t / (union_t + 1e-6))
+                overlap_others = float(np.logical_and(prop, others).sum() / (prop.sum() + 1e-6))
+                conflict_ratio = 1.0 if np.logical_and(prop, others).any() else 0.0
+
+                # map to 7-dim feature format used by refiner
+                feat = np.array([
+                    1.0,            # len track
+                    iou_t,          # pseudo link quality
+                    0.0,            # area std
+                    0.0,            # gap
+                    max(0.0, iou_t),# pseudo confidence
+                    overlap_others, # overlap mean
+                    conflict_ratio, # conflict ratio
+                ], dtype=np.float32)
+                label = 1.0 if (iou_t > 0.6 and overlap_others < 0.05) else 0.0
+                xs.append(feat)
+                ys.append(label)
+    if not xs:
+        return np.zeros((0, 7), dtype=np.float32), np.zeros((0,), dtype=np.float32)
+    return np.stack(xs), np.array(ys, dtype=np.float32)
+
+
 def run_training(args):
     images, gts = load_stacks(args.input)
     if len(images) == 0:
@@ -95,9 +149,13 @@ def run_training(args):
             masks, *_ = model.eval(img[z], do_3D=False, diameter=args.diameter)
             pred.append(masks.astype(np.int32))
         x, y = _extract_features_and_labels(img, gt, pred)
+        sx, sy = _synthetic_refiner_samples(img, gt, seed=args.seed + i, n_per_obj=getattr(args, "synthetic_per_obj", 6))
         if len(x):
             xs.append(x)
             ys.append(y)
+        if len(sx):
+            xs.append(sx)
+            ys.append(sy)
 
     x_train = np.concatenate(xs, axis=0)
     y_train = np.concatenate(ys, axis=0)

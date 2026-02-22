@@ -283,6 +283,8 @@ def get_arg_parser():
                              help="path to semi3d_stage1_masks.tif (or .npy) for --semi3d_stage2")
     semi3d_args.add_argument("--semi3d_stage1_flows", default=None, type=str,
                              help="optional path to semi3d_stage1_flows.npy for --semi3d_stage2")
+    semi3d_args.add_argument("--semi3d_stage1_prob", default=None, type=str,
+                             help="optional path to semi3d_stage1_prob.tif for --semi3d_stage2")
     semi3d_args.add_argument("--semi3d_border_exclusion_px", default=0, type=int,
                              help="remove stage1 instances touching border band of this width")
     semi3d_args.add_argument("--semi3d_fill_edges", action="store_true",
@@ -303,6 +305,10 @@ def get_arg_parser():
                              help="allow reconstructed masks to overlap already-established masks")
     semi3d_args.add_argument("--semi3d_recon_min_free_fraction", default=0.25, type=float,
                              help="minimum free-pixel fraction required to keep reconstructed mask")
+    semi3d_args.add_argument("--semi3d_use_prob_occupancy", action="store_true",
+                             help="use stage1 probability map as additional occupancy prior in stage2 reconstruction")
+    semi3d_args.add_argument("--semi3d_prob_occupancy_thresh", default=0.5, type=float,
+                             help="probability threshold above which territories are treated as occupied for reconstruction")
     semi3d_args.add_argument("--semi3d_refiner_threshold", default=0.5, type=float,
                              help="keep threshold for trained semi3d refiner probability")
     semi3d_args.add_argument("--semi3d_simulate_z_dropout", action="store_true",
@@ -317,6 +323,8 @@ def get_arg_parser():
                              help="use linear refiner instead of nonlinear model")
     semi3d_args.add_argument("--semi3d_refiner_hidden_dim", default=16, type=int,
                              help="hidden dimension for nonlinear refiner")
+    semi3d_args.add_argument("--semi3d_synthetic_per_obj", default=6, type=int,
+                             help="number of synthetic distorted samples per GT object for refiner training")
 
 
     return parser

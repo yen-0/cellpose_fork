@@ -93,7 +93,7 @@ Inference-specific:
 
 Training-specific:
 - `--semi3d_simulate_z_dropout`, `--semi3d_dropout_prob`
-- `--semi3d_learning_rate`, `--semi3d_epochs`
+- `--semi3d_learning_rate`, `--semi3d_epochs`, `--semi3d_synthetic_per_obj`
 
 Eval-specific:
 - `--semi3d_pred`, `--semi3d_gt`
@@ -134,7 +134,7 @@ You can now run Semi-3D in two explicit endpoints:
 2. `--semi3d_stage2`: load stage1 masks and run linking/reconstruction/refinement.
 
 Useful flags:
-- `--semi3d_stage1_masks` (preferred TIFF), `--semi3d_stage1_flows`
+- `--semi3d_stage1_masks` (preferred TIFF), `--semi3d_stage1_flows`, `--semi3d_stage1_prob`
 - `--semi3d_memmap_stage2_inputs` (memory-map masks in stage2)
 - `--semi3d_stage2_use_gpu` (GPU refiner scoring in stage2)
 - `--semi3d_link_gpu_prefilter` (hybrid GPU prefilter for linking)
@@ -143,6 +143,7 @@ Useful flags:
 - `--semi3d_fill_edges` (fills first/last slices too)
 - `--semi3d_allow_overlap_recon` (disable occupancy-aware reconstruction blocking)
 - `--semi3d_recon_min_free_fraction` (reject impossible reconstructions that mostly overlap established cells)
+- `--semi3d_use_prob_occupancy`, `--semi3d_prob_occupancy_thresh` (use stage1 probability map as occupancy prior in stage2)
 - `--semi3d_save_debug_tiff` (save debug flow/prob/refiner maps as TIFF)
 - `--semi3d_max_gap` (supports 2+ skips)
 - `--use_gpu` for accelerated stage1 inference
@@ -177,3 +178,8 @@ If you change linking/reconstruction settings (merge distance, overlap/occupancy
 ### Strict occupancy rule
 
 With default behavior, reconstruction is forbidden from writing into territories already claimed by linked track assignments. Direct linked claims are locked first, then reconstruction is applied only on remaining free pixels.
+
+
+### Refiner training data generation
+
+Training now augments GT with synthetic distorted/displaced target masks and overlap-with-other-cell conflict samples (impossible territory examples) so the refiner learns to reject placements that invade already-occupied regions.
