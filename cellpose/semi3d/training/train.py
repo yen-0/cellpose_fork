@@ -8,13 +8,13 @@ from ..linking import build_association_tracks
 from ..confidence import track_confidence
 
 
-def extract_track_features(track, image_stack):
+def extract_track_features(track, image_stack, source_masks=None):
     return np.array([
         len(track.nodes),
         np.mean(track.links) if track.links else 0.0,
         np.std([n.area for n in track.nodes]) if len(track.nodes) > 1 else 0.0,
         track.gap_bridges,
-        track_confidence(track, image_stack),
+        track_confidence(track, image_stack, source_masks=source_masks),
     ], dtype=np.float32)
 
 
@@ -25,7 +25,7 @@ def _extract_features_and_labels(image_stack, gt_stack, pred_stack):
     for tr in tracks:
         zmin, zmax = tr.nodes[0].z, tr.nodes[-1].z
         support = float(gt_present[zmin:zmax + 1].mean())
-        x.append(extract_track_features(tr, image_stack))
+        x.append(extract_track_features(tr, image_stack, source_masks=pred_stack))
         y.append(1.0 if support > 0.3 else 0.0)
     if not x:
         return np.zeros((0, 5), dtype=np.float32), np.zeros((0,), dtype=np.float32)

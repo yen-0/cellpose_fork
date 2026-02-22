@@ -133,7 +133,7 @@ def _run_stage2(args):
         refiner = RefinerModel.load(args.refiner_model)
         if len(tracks):
             LOGGER.info("[semi3d:stage2] scoring %d tracks with %s", len(tracks), "GPU" if args.stage2_use_gpu else "CPU")
-            feats = np.stack([extract_track_features(tr, stack) for tr in tracks], axis=0)
+            feats = np.stack([extract_track_features(tr, stack, source_masks=per_slice_masks) for tr in tracks], axis=0)
             keep_prob = _predict_keep_prob(refiner, feats, use_gpu=args.stage2_use_gpu)
             tracks = [tr for tr, p in zip(tracks, keep_prob) if p >= args.refiner_threshold]
 
