@@ -63,15 +63,23 @@ def relabel_tracks(tracks, image_stack, flow_stack=None, min_track_len=2, min_co
             continue
         kept.append((tr, conf))
 
+    kept = sorted(kept, key=lambda x: x[1], reverse=True)
+
     for tr, _ in kept:
         tid = next_id
         next_id += 1
         for n in tr.nodes:
             src = None if source_masks is None else source_masks[n.z]
             nmask = _node_mask(n, image_stack[0].shape[:2], slice_mask=src)
-            out[n.z][nmask] = tid
+            nmask_use = nmask
+            if avoid_occupied:
+                free = out[n.z] == 0
+                nmask_use = np.logical_and(nmask, free)
+            if not np.any(nmask_use):
+                continue
+            out[n.z][nmask_use] = tid
             if track_labels is not None:
-                track_labels[n.z][nmask] = tid
+                track_labels[n.z][nmask_use] = tid
         for z, m, _, _ in recover_track_gaps(tr, image_stack, flow_stack=flow_stack, fill_edges=fill_edges, source_masks=source_masks):
             if m is not None and np.any(m):
                 m_use = m

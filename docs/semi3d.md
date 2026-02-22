@@ -162,3 +162,8 @@ Use `--semi3d_fill_edges` during `--semi3d` or `--semi3d_stage2` to run boundary
 ### Refiner caveat update
 
 Refiner features now include overlap-conflict signals between tracks (same-slice overlap ratio / conflict ratio) to better down-rank impossible masks in crowded regions.
+
+
+### Occupancy safety behavior
+
+With default settings, both direct track assignments and reconstructed masks are clipped to free pixels only, so already-confirmed territory is not overwritten. Tracks are applied in descending confidence order.

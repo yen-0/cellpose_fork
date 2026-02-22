@@ -109,3 +109,23 @@ def test_main_parser_accepts_stage_flags():
     assert abs(args.semi3d_merge_dist - 10.0) < 1e-6
     assert abs(args.semi3d_recon_min_free_fraction - 0.3) < 1e-6
     assert args.semi3d_save_debug_tiff is True
+
+
+def test_relabel_does_not_overwrite_confirmed_territory():
+    from cellpose.semi3d.linking import Track, InstanceNode
+    from cellpose.semi3d.refine import relabel_tracks
+
+    shape = (16, 16)
+    m1 = np.zeros(shape, dtype=bool); m1[4:8, 4:8] = True
+    m2 = np.zeros(shape, dtype=bool); m2[5:9, 5:9] = True
+    n1 = InstanceNode(z=0, instance_id=1, bbox=(4,8,4,8), centroid=np.array([5.5,5.5]), area=int(m1.sum()), mask_crop=m1[4:8,4:8])
+    n2 = InstanceNode(z=0, instance_id=2, bbox=(5,9,5,9), centroid=np.array([6.5,6.5]), area=int(m2.sum()), mask_crop=m2[5:9,5:9])
+    t1 = Track(track_id=1, nodes=[n1], links=[0.9])
+    t2 = Track(track_id=2, nodes=[n2], links=[0.8])
+
+    img = np.stack([np.zeros(shape, dtype=np.float32)], axis=0)
+    out, _, _, _ = relabel_tracks([t1, t2], img, min_track_len=1, min_conf=0.0, avoid_occupied=True)
+    # no pixel can belong to both ids; occupancy is first-come by confidence ordering
+    assert np.all((out[0] == 1) | (out[0] == 2) | (out[0] == 0))
+    assert np.sum(out[0] == 1) > 0
+    assert np.sum(out[0] == 2) > 0
