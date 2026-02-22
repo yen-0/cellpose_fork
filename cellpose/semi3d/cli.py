@@ -188,7 +188,7 @@ def _run_stage2(args):
         refiner = RefinerModel.load(args.refiner_model)
         if len(tracks):
             LOGGER.info("[semi3d:stage2] scoring %d tracks with %s", len(tracks), "GPU" if args.stage2_use_gpu else "CPU")
-            feats = np.stack([extract_track_features(tr, stack, source_masks=per_slice_masks, all_tracks=tracks, prob_stack=stage1_prob) for tr in tracks], axis=0)
+            feats = np.stack([extract_track_features(tr, stack, source_masks=per_slice_masks, all_tracks=tracks) for tr in tracks], axis=0)
             feats = _adapt_feature_dim(feats, refiner)
             keep_prob = _predict_keep_prob(refiner, feats, use_gpu=args.stage2_use_gpu)
             if getattr(args, "save_debug_tiff", False):
@@ -346,7 +346,6 @@ def run_from_cellpose_args(args):
             refiner_hidden_dim=args.semi3d_refiner_hidden_dim,
             synthetic_per_obj=args.semi3d_synthetic_per_obj,
             batch_size=args.semi3d_refiner_batch_size,
-            train_use_prob=not args.semi3d_no_train_use_prob,
             verbose=args.verbose,
         )
         path, n = run_training(semi_args)

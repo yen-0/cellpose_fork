@@ -325,8 +325,6 @@ def get_arg_parser():
                              help="hidden dimension for nonlinear refiner")
     semi3d_args.add_argument("--semi3d_refiner_batch_size", default=64, type=int,
                              help="mini-batch size for refiner training")
-    semi3d_args.add_argument("--semi3d_no_train_use_prob", action="store_true",
-                             help="disable using cellpose probability maps in refiner training features")
     semi3d_args.add_argument("--semi3d_synthetic_per_obj", default=6, type=int,
                              help="number of synthetic distorted samples per GT object for refiner training")
 

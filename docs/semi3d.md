@@ -94,7 +94,6 @@ Inference-specific:
 Training-specific:
 - `--semi3d_simulate_z_dropout`, `--semi3d_dropout_prob`
 - `--semi3d_learning_rate`, `--semi3d_epochs`, `--semi3d_synthetic_per_obj`, `--semi3d_refiner_batch_size`
-- `--semi3d_no_train_use_prob` (default uses cellpose probability maps for refiner training)
 
 Eval-specific:
 - `--semi3d_pred`, `--semi3d_gt`
@@ -222,5 +221,3 @@ cellpose --semi3d_train \
   --semi3d_epochs 200 --use_gpu --verbose
 ```
 
-# Optional: disable probability features in training
-# add --semi3d_no_train_use_prob
