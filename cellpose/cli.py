@@ -309,6 +309,12 @@ def get_arg_parser():
                              help="use stage1 probability map as additional occupancy prior in stage2 reconstruction")
     semi3d_args.add_argument("--semi3d_prob_occupancy_thresh", default=0.5, type=float,
                              help="probability threshold above which territories are treated as occupied for reconstruction")
+    semi3d_args.add_argument("--semi3d_prob_foggy_floor", default=0.15, type=float,
+                             help="low probability floor used to detect foggy slices for occupancy gating")
+    semi3d_args.add_argument("--semi3d_prob_foggy_fraction", default=0.10, type=float,
+                             help="minimum fraction of pixels above foggy floor to activate fog-aware occupancy threshold")
+    semi3d_args.add_argument("--semi3d_prob_foggy_thresh", default=0.35, type=float,
+                             help="alternate occupancy threshold used on foggy slices (clamped to <= prob_occupancy_thresh)")
     semi3d_args.add_argument("--semi3d_refiner_threshold", default=0.5, type=float,
                              help="keep threshold for trained semi3d refiner probability")
     semi3d_args.add_argument("--semi3d_simulate_z_dropout", action="store_true",

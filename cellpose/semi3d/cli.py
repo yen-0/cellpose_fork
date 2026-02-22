@@ -211,6 +211,9 @@ def _run_stage2(args):
         min_free_fraction=args.recon_min_free_fraction,
         prob_stack=stage1_prob if args.use_prob_occupancy else None,
         prob_occupancy_thresh=args.prob_occupancy_thresh,
+        prob_foggy_floor=args.prob_foggy_floor,
+        prob_foggy_fraction=args.prob_foggy_fraction,
+        prob_foggy_thresh=args.prob_foggy_thresh,
     )
 
     refined_stack = np.stack(refined, axis=0).astype(np.int32)
@@ -271,6 +274,9 @@ def run_from_cellpose_args(args):
             stage1_prob=args.semi3d_stage1_prob,
             use_prob_occupancy=args.semi3d_use_prob_occupancy,
             prob_occupancy_thresh=args.semi3d_prob_occupancy_thresh,
+            prob_foggy_floor=args.semi3d_prob_foggy_floor,
+            prob_foggy_fraction=args.semi3d_prob_foggy_fraction,
+            prob_foggy_thresh=args.semi3d_prob_foggy_thresh,
         )
         total, kept = _run_inference(semi_args)
         print(f"semi3d complete: tracks={total}, kept={kept}")
@@ -291,6 +297,9 @@ def run_from_cellpose_args(args):
             stage1_prob=args.semi3d_stage1_prob,
             use_prob_occupancy=args.semi3d_use_prob_occupancy,
             prob_occupancy_thresh=args.semi3d_prob_occupancy_thresh,
+            prob_foggy_floor=args.semi3d_prob_foggy_floor,
+            prob_foggy_fraction=args.semi3d_prob_foggy_fraction,
+            prob_foggy_thresh=args.semi3d_prob_foggy_thresh,
         )
         path = _run_stage1(semi_args)
         print(f"semi3d stage1 complete: {path}")
@@ -324,6 +333,9 @@ def run_from_cellpose_args(args):
             stage1_prob=args.semi3d_stage1_prob,
             use_prob_occupancy=args.semi3d_use_prob_occupancy,
             prob_occupancy_thresh=args.semi3d_prob_occupancy_thresh,
+            prob_foggy_floor=args.semi3d_prob_foggy_floor,
+            prob_foggy_fraction=args.semi3d_prob_foggy_fraction,
+            prob_foggy_thresh=args.semi3d_prob_foggy_thresh,
         )
         total, kept = _run_stage2(semi_args)
         print(f"semi3d stage2 complete: tracks={total}, kept={kept}")
