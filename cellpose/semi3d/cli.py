@@ -3,6 +3,7 @@ import random
 import logging
 from types import SimpleNamespace
 import numpy as np
+from scipy.ndimage import gaussian_filter
 from cellpose import io, models
 from .linking import build_association_tracks
 from .refine import relabel_tracks
@@ -80,15 +81,25 @@ def _extract_debug_maps(flows):
 
 
 
-def _defog_probability(prob_slice, bg_percentile=35.0, hi_percentile=99.0, gamma=1.2):
+def _defog_probability(prob_slice, bg_percentile=5.0, hi_percentile=97.0, gamma=0.9, bg_sigma=40.0):
     p = np.asarray(prob_slice, dtype=np.float32)
     if p.ndim > 2:
         p = np.squeeze(p)
-    bg = float(np.percentile(p, bg_percentile))
-    hi = float(np.percentile(p, hi_percentile))
+
+    # Estimate low-frequency fog field B(x,y) and subtract it before global stretching.
+    if bg_sigma is not None and bg_sigma > 0:
+        b = gaussian_filter(p, sigma=float(bg_sigma))
+        p_flat = p - b
+    else:
+        p_flat = p.copy()
+
+    p_flat = p_flat - float(np.min(p_flat))
+    hi = float(np.percentile(p_flat, hi_percentile))
+    bg = float(np.percentile(p_flat, bg_percentile))
     if hi <= bg + 1e-6:
-        return np.clip(p, 0.0, 1.0)
-    q = (p - bg) / (hi - bg + 1e-6)
+        return np.clip(p_flat, 0.0, 1.0).astype(np.float32)
+
+    q = (p_flat - bg) / (hi - bg + 1e-6)
     q = np.clip(q, 0.0, 1.0)
     if gamma != 1.0:
         q = np.power(q, float(gamma), dtype=np.float32)
@@ -117,9 +128,10 @@ def _run_stage1(args):
         if prob_slice is not None and getattr(args, "stage1_defog_prob", True):
             prob_slice = _defog_probability(
                 prob_slice,
-                bg_percentile=getattr(args, "stage1_prob_bg_percentile", 35.0),
-                hi_percentile=getattr(args, "stage1_prob_hi_percentile", 99.0),
-                gamma=getattr(args, "stage1_prob_gamma", 1.2),
+                bg_percentile=getattr(args, "stage1_prob_bg_percentile", 5.0),
+                hi_percentile=getattr(args, "stage1_prob_hi_percentile", 97.0),
+                gamma=getattr(args, "stage1_prob_gamma", 0.9),
+                bg_sigma=getattr(args, "stage1_prob_bg_sigma", 40.0),
             )
         per_slice_prob.append(prob_slice)
         LOGGER.info("[semi3d:stage1] slice %d/%d", z + 1, stack.shape[0])
@@ -298,6 +310,7 @@ def run_from_cellpose_args(args):
             stage1_prob_bg_percentile=args.semi3d_stage1_prob_bg_percentile,
             stage1_prob_hi_percentile=args.semi3d_stage1_prob_hi_percentile,
             stage1_prob_gamma=args.semi3d_stage1_prob_gamma,
+            stage1_prob_bg_sigma=args.semi3d_stage1_prob_bg_sigma,
         )
         total, kept = _run_inference(semi_args)
         print(f"semi3d complete: tracks={total}, kept={kept}")
@@ -322,6 +335,7 @@ def run_from_cellpose_args(args):
             stage1_prob_bg_percentile=args.semi3d_stage1_prob_bg_percentile,
             stage1_prob_hi_percentile=args.semi3d_stage1_prob_hi_percentile,
             stage1_prob_gamma=args.semi3d_stage1_prob_gamma,
+            stage1_prob_bg_sigma=args.semi3d_stage1_prob_bg_sigma,
         )
         path = _run_stage1(semi_args)
         print(f"semi3d stage1 complete: {path}")
@@ -355,10 +369,6 @@ def run_from_cellpose_args(args):
             stage1_prob=args.semi3d_stage1_prob,
             use_prob_occupancy=args.semi3d_use_prob_occupancy,
             prob_occupancy_thresh=args.semi3d_prob_occupancy_thresh,
-            stage1_defog_prob=not args.semi3d_disable_stage1_prob_defog,
-            stage1_prob_bg_percentile=args.semi3d_stage1_prob_bg_percentile,
-            stage1_prob_hi_percentile=args.semi3d_stage1_prob_hi_percentile,
-            stage1_prob_gamma=args.semi3d_stage1_prob_gamma,
         )
         total, kept = _run_stage2(semi_args)
         print(f"semi3d stage2 complete: tracks={total}, kept={kept}")

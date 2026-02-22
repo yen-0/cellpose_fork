@@ -311,12 +311,14 @@ def get_arg_parser():
                              help="probability threshold above which territories are treated as occupied for reconstruction")
     semi3d_args.add_argument("--semi3d_disable_stage1_prob_defog", action="store_true",
                              help="disable stage1 probability de-fogging before saving stage1 prob TIFF")
-    semi3d_args.add_argument("--semi3d_stage1_prob_bg_percentile", default=35.0, type=float,
-                             help="background percentile used for stage1 probability de-fog normalization")
-    semi3d_args.add_argument("--semi3d_stage1_prob_hi_percentile", default=99.0, type=float,
-                             help="high percentile used for stage1 probability de-fog normalization")
-    semi3d_args.add_argument("--semi3d_stage1_prob_gamma", default=1.2, type=float,
-                             help="gamma applied after stage1 probability de-fog normalization")
+    semi3d_args.add_argument("--semi3d_stage1_prob_bg_percentile", default=5.0, type=float,
+                             help="background percentile after stage1 fog-field subtraction")
+    semi3d_args.add_argument("--semi3d_stage1_prob_hi_percentile", default=97.0, type=float,
+                             help="high percentile after stage1 fog-field subtraction")
+    semi3d_args.add_argument("--semi3d_stage1_prob_gamma", default=0.9, type=float,
+                             help="gamma after stage1 fog-field subtraction and percentile normalization")
+    semi3d_args.add_argument("--semi3d_stage1_prob_bg_sigma", default=40.0, type=float,
+                             help="gaussian sigma (pixels) for spatial fog-field estimation in stage1")
     semi3d_args.add_argument("--semi3d_refiner_threshold", default=0.5, type=float,
                              help="keep threshold for trained semi3d refiner probability")
     semi3d_args.add_argument("--semi3d_simulate_z_dropout", action="store_true",
