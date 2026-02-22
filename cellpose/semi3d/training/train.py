@@ -8,13 +8,60 @@ from ..linking import build_association_tracks
 from ..confidence import track_confidence
 
 
-def extract_track_features(track, image_stack, source_masks=None):
+def _node_mask(node, shape, source_masks=None):
+    if hasattr(node, "mask"):
+        return node.mask
+    src = None if source_masks is None else source_masks[node.z]
+    if hasattr(node, "full_mask"):
+        return node.full_mask(shape, slice_mask=src)
+    raise AttributeError("node does not provide mask/full_mask")
+
+
+def _track_conflict_features(track, tracks, image_shape, source_masks=None):
+    overlaps = []
+    same_z_conflicts = 0
+    checked = 0
+    for n in track.nodes:
+        m = _node_mask(n, image_shape, source_masks=source_masks)
+        checked += 1
+        has_conflict = False
+        for ot in tracks:
+            if ot is track:
+                continue
+            for on in ot.nodes:
+                if on.z != n.z:
+                    continue
+                om = _node_mask(on, image_shape, source_masks=source_masks)
+                inter = np.logical_and(m, om).sum()
+                if inter > 0:
+                    union = np.logical_or(m, om).sum()
+                    overlaps.append(float(inter / (union + 1e-6)))
+                    has_conflict = True
+                    break
+            if has_conflict:
+                break
+        if has_conflict:
+            same_z_conflicts += 1
+
+    overlap_mean = float(np.mean(overlaps)) if overlaps else 0.0
+    conflict_ratio = float(same_z_conflicts / (checked + 1e-6))
+    return overlap_mean, conflict_ratio
+
+
+def extract_track_features(track, image_stack, source_masks=None, all_tracks=None):
+    overlap_mean, conflict_ratio = (0.0, 0.0)
+    if all_tracks is not None:
+        overlap_mean, conflict_ratio = _track_conflict_features(
+            track, all_tracks, image_stack[0].shape[:2], source_masks=source_masks
+        )
     return np.array([
         len(track.nodes),
         np.mean(track.links) if track.links else 0.0,
         np.std([n.area for n in track.nodes]) if len(track.nodes) > 1 else 0.0,
         track.gap_bridges,
         track_confidence(track, image_stack, source_masks=source_masks),
+        overlap_mean,
+        conflict_ratio,
     ], dtype=np.float32)
 
 
@@ -25,10 +72,10 @@ def _extract_features_and_labels(image_stack, gt_stack, pred_stack):
     for tr in tracks:
         zmin, zmax = tr.nodes[0].z, tr.nodes[-1].z
         support = float(gt_present[zmin:zmax + 1].mean())
-        x.append(extract_track_features(tr, image_stack, source_masks=pred_stack))
+        x.append(extract_track_features(tr, image_stack, source_masks=pred_stack, all_tracks=tracks))
         y.append(1.0 if support > 0.3 else 0.0)
     if not x:
-        return np.zeros((0, 5), dtype=np.float32), np.zeros((0,), dtype=np.float32)
+        return np.zeros((0, 7), dtype=np.float32), np.zeros((0,), dtype=np.float32)
     return np.stack(x), np.array(y, dtype=np.float32)
 
 

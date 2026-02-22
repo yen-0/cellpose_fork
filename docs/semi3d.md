@@ -143,6 +143,7 @@ Useful flags:
 - `--semi3d_fill_edges` (fills first/last slices too)
 - `--semi3d_allow_overlap_recon` (disable occupancy-aware reconstruction blocking)
 - `--semi3d_recon_min_free_fraction` (reject impossible reconstructions that mostly overlap established cells)
+- `--semi3d_save_debug_tiff` (save debug flow/prob/refiner maps as TIFF)
 - `--semi3d_max_gap` (supports 2+ skips)
 - `--use_gpu` for accelerated stage1 inference
 - `--semi3d_refiner_linear` to force linear model; nonlinear refiner is default
@@ -156,3 +157,8 @@ Use `--semi3d_fill_edges` during `--semi3d` or `--semi3d_stage2` to run boundary
 ### Stage2 launching note
 
 `--semi3d_stage2` is a true semi3d mode and is dispatched through the semi3d runner (not GUI mode).
+
+
+### Refiner caveat update
+
+Refiner features now include overlap-conflict signals between tracks (same-slice overlap ratio / conflict ratio) to better down-rank impossible masks in crowded regions.

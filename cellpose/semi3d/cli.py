@@ -40,6 +40,44 @@ def _remove_border_instances(mask, border_px=0):
     return out
 
 
+
+
+def _adapt_feature_dim(feats, refiner):
+    target_dim = None
+    if hasattr(refiner, "w"):
+        target_dim = int(refiner.w.shape[0])
+    elif hasattr(refiner, "w1"):
+        target_dim = int(refiner.w1.shape[0])
+    if target_dim is None or feats.shape[1] == target_dim:
+        return feats
+    if feats.shape[1] > target_dim:
+        return feats[:, :target_dim]
+    pad = np.zeros((feats.shape[0], target_dim - feats.shape[1]), dtype=feats.dtype)
+    return np.concatenate([feats, pad], axis=1)
+
+
+def _extract_debug_maps(flows):
+    flow_slice = flows[1] if isinstance(flows, (list, tuple)) and len(flows) > 1 else None
+    prob_slice = flows[2] if isinstance(flows, (list, tuple)) and len(flows) > 2 else None
+    flow_mag = None
+    if flow_slice is not None:
+        arr = np.asarray(flow_slice)
+        if arr.ndim >= 3:
+            if arr.shape[0] >= 2:
+                fy, fx = arr[0], arr[1]
+            elif arr.shape[-1] >= 2:
+                fy, fx = arr[..., 0], arr[..., 1]
+            else:
+                fy = fx = None
+            if fy is not None:
+                flow_mag = np.sqrt(fy.astype(np.float32) ** 2 + fx.astype(np.float32) ** 2)
+    if prob_slice is not None:
+        p = np.asarray(prob_slice).astype(np.float32)
+        if p.ndim > 2:
+            p = np.squeeze(p)
+        prob_slice = p
+    return flow_slice, flow_mag, prob_slice
+
 def _run_stage1(args):
     np.random.seed(args.seed)
     random.seed(args.seed)
@@ -49,19 +87,31 @@ def _run_stage1(args):
     model = models.CellposeModel(gpu=args.use_gpu, pretrained_model=args.pretrained_model)
     per_slice_masks = []
     per_slice_flows = []
+    per_slice_flow_mag = []
+    per_slice_prob = []
 
     LOGGER.info("[semi3d:stage1] starting per-slice inference (%d slices)", stack.shape[0])
     for z in range(stack.shape[0]):
         masks, flows, *_ = model.eval(stack[z], do_3D=False, diameter=args.diameter)
         masks = _remove_border_instances(masks.astype(np.int32), args.border_exclusion_px)
         per_slice_masks.append(masks)
-        per_slice_flows.append(flows[1] if isinstance(flows, (list, tuple)) and len(flows) > 1 else None)
+        flow_slice, flow_mag, prob_slice = _extract_debug_maps(flows)
+        per_slice_flows.append(flow_slice)
+        per_slice_flow_mag.append(flow_mag)
+        per_slice_prob.append(prob_slice)
         LOGGER.info("[semi3d:stage1] slice %d/%d", z + 1, stack.shape[0])
 
     masks_path = os.path.join(args.output, "semi3d_stage1_masks.tif")
     io.imsave(masks_path, np.stack(per_slice_masks, axis=0).astype(np.int32))
     if args.save_flows:
         np.save(os.path.join(args.output, "semi3d_stage1_flows.npy"), np.array(per_slice_flows, dtype=object), allow_pickle=True)
+    if getattr(args, "save_debug_tiff", False):
+        if any(f is not None for f in per_slice_flow_mag):
+            flow_mag_stack = np.stack([np.zeros_like(per_slice_masks[0], dtype=np.float32) if f is None else f.astype(np.float32) for f in per_slice_flow_mag], axis=0)
+            io.imsave(os.path.join(args.output, "semi3d_stage1_flow_mag.tif"), flow_mag_stack)
+        if any(p is not None for p in per_slice_prob):
+            prob_stack = np.stack([np.zeros_like(per_slice_masks[0], dtype=np.float32) if p is None else p.astype(np.float32) for p in per_slice_prob], axis=0)
+            io.imsave(os.path.join(args.output, "semi3d_stage1_prob.tif"), prob_stack)
     LOGGER.info("[semi3d:stage1] complete -> %s", masks_path)
     return masks_path
 
@@ -134,8 +184,13 @@ def _run_stage2(args):
         refiner = RefinerModel.load(args.refiner_model)
         if len(tracks):
             LOGGER.info("[semi3d:stage2] scoring %d tracks with %s", len(tracks), "GPU" if args.stage2_use_gpu else "CPU")
-            feats = np.stack([extract_track_features(tr, stack, source_masks=per_slice_masks) for tr in tracks], axis=0)
+            feats = np.stack([extract_track_features(tr, stack, source_masks=per_slice_masks, all_tracks=tracks) for tr in tracks], axis=0)
+            feats = _adapt_feature_dim(feats, refiner)
             keep_prob = _predict_keep_prob(refiner, feats, use_gpu=args.stage2_use_gpu)
+            if getattr(args, "save_debug_tiff", False):
+                prob_map = np.zeros((len(tracks), 1, 1), dtype=np.float32)
+                prob_map[:, 0, 0] = keep_prob.astype(np.float32)
+                io.imsave(os.path.join(args.output, "semi3d_refiner_keep_prob.tif"), prob_map)
             tracks = [tr for tr, p in zip(tracks, keep_prob) if p >= args.refiner_threshold]
 
     LOGGER.info("[semi3d:stage2] relabel/reconstruct")
@@ -205,6 +260,7 @@ def run_from_cellpose_args(args):
             merge_dist=args.semi3d_merge_dist,
             allow_overlap_recon=args.semi3d_allow_overlap_recon,
             recon_min_free_fraction=args.semi3d_recon_min_free_fraction,
+            save_debug_tiff=args.semi3d_save_debug_tiff,
         )
         total, kept = _run_inference(semi_args)
         print(f"semi3d complete: tracks={total}, kept={kept}")
@@ -221,6 +277,7 @@ def run_from_cellpose_args(args):
             seed=args.semi3d_seed,
             border_exclusion_px=args.semi3d_border_exclusion_px,
             save_flows=args.semi3d_save_flows,
+            save_debug_tiff=args.semi3d_save_debug_tiff,
         )
         path = _run_stage1(semi_args)
         print(f"semi3d stage1 complete: {path}")
@@ -250,6 +307,7 @@ def run_from_cellpose_args(args):
             merge_dist=args.semi3d_merge_dist,
             allow_overlap_recon=args.semi3d_allow_overlap_recon,
             recon_min_free_fraction=args.semi3d_recon_min_free_fraction,
+            save_debug_tiff=args.semi3d_save_debug_tiff,
         )
         total, kept = _run_stage2(semi_args)
         print(f"semi3d stage2 complete: tracks={total}, kept={kept}")
