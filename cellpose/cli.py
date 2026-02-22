@@ -297,6 +297,10 @@ def get_arg_parser():
                              help="use hybrid GPU prefilter (distance/size gating) during stage2 linking")
     semi3d_args.add_argument("--semi3d_merge_dist", default=12.0, type=float,
                              help="max centroid distance to merge split detections within a slice")
+    semi3d_args.add_argument("--semi3d_allow_overlap_recon", action="store_true",
+                             help="allow reconstructed masks to overlap already-established masks")
+    semi3d_args.add_argument("--semi3d_recon_min_free_fraction", default=0.25, type=float,
+                             help="minimum free-pixel fraction required to keep reconstructed mask")
     semi3d_args.add_argument("--semi3d_refiner_threshold", default=0.5, type=float,
                              help="keep threshold for trained semi3d refiner probability")
     semi3d_args.add_argument("--semi3d_simulate_z_dropout", action="store_true",

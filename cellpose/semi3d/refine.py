@@ -40,7 +40,7 @@ def recover_track_gaps(track, image_stack, flow_stack=None, fill_edges=False, so
 
 
 def relabel_tracks(tracks, image_stack, flow_stack=None, min_track_len=2, min_conf=0.05,
-                   fill_edges=False, return_track_labels=True, source_masks=None):
+                   fill_edges=False, return_track_labels=True, source_masks=None, avoid_occupied=True, min_free_fraction=0.25):
     zcount = len(image_stack)
     out = [np.zeros(image_stack[0].shape[:2], dtype=np.int32) for _ in range(zcount)]
     track_labels = np.zeros((zcount, *image_stack[0].shape[:2]), dtype=np.int32) if return_track_labels else None
@@ -65,9 +65,17 @@ def relabel_tracks(tracks, image_stack, flow_stack=None, min_track_len=2, min_co
                 track_labels[n.z][nmask] = tid
         for z, m, _, _ in recover_track_gaps(tr, image_stack, flow_stack=flow_stack, fill_edges=fill_edges, source_masks=source_masks):
             if m is not None and np.any(m):
-                out[z][m] = tid
+                m_use = m
+                if avoid_occupied:
+                    free = out[z] == 0
+                    kept_pix = np.logical_and(m, free)
+                    frac = kept_pix.sum() / (m.sum() + 1e-6)
+                    if frac < min_free_fraction:
+                        continue
+                    m_use = kept_pix
+                out[z][m_use] = tid
                 if track_labels is not None:
-                    track_labels[z][m] = tid
-                reconstructed_flags[z][m] = 1
+                    track_labels[z][m_use] = tid
+                reconstructed_flags[z][m_use] = 1
 
     return out, track_labels, reconstructed_flags, kept

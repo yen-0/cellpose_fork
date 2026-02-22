@@ -29,6 +29,15 @@ class InstanceNode:
         return out
 
 
+@dataclass
+class Track:
+    track_id: int
+    nodes: List[InstanceNode] = field(default_factory=list)
+    links: List[float] = field(default_factory=list)
+    gap_bridges: int = 0
+    gap_hist: Dict[int, int] = field(default_factory=dict)
+
+
 def _extract_contours(mask_crop: np.ndarray) -> List[np.ndarray]:
     cnts, _ = cv2.findContours(mask_crop.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     out = []
@@ -247,12 +256,3 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
         active = [t for t in active if z - t.nodes[-1].z < max_gap]
 
     return tracks
-
-
-@dataclass
-class Track:
-    track_id: int
-    nodes: List[InstanceNode] = field(default_factory=list)
-    links: List[float] = field(default_factory=list)
-    gap_bridges: int = 0
-    gap_hist: Dict[int, int] = field(default_factory=dict)

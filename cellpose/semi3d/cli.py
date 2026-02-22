@@ -148,6 +148,8 @@ def _run_stage2(args):
         fill_edges=args.fill_edges,
         return_track_labels=args.save_3d_labels,
         source_masks=per_slice_masks,
+        avoid_occupied=not args.allow_overlap_recon,
+        min_free_fraction=args.recon_min_free_fraction,
     )
 
     refined_stack = np.stack(refined, axis=0).astype(np.int32)
@@ -201,6 +203,8 @@ def run_from_cellpose_args(args):
             memmap_stage2_inputs=args.semi3d_memmap_stage2_inputs,
             link_gpu_prefilter=args.semi3d_link_gpu_prefilter,
             merge_dist=args.semi3d_merge_dist,
+            allow_overlap_recon=args.semi3d_allow_overlap_recon,
+            recon_min_free_fraction=args.semi3d_recon_min_free_fraction,
         )
         total, kept = _run_inference(semi_args)
         print(f"semi3d complete: tracks={total}, kept={kept}")
@@ -244,6 +248,8 @@ def run_from_cellpose_args(args):
             memmap_stage2_inputs=args.semi3d_memmap_stage2_inputs,
             link_gpu_prefilter=args.semi3d_link_gpu_prefilter,
             merge_dist=args.semi3d_merge_dist,
+            allow_overlap_recon=args.semi3d_allow_overlap_recon,
+            recon_min_free_fraction=args.semi3d_recon_min_free_fraction,
         )
         total, kept = _run_stage2(semi_args)
         print(f"semi3d stage2 complete: tracks={total}, kept={kept}")

@@ -36,7 +36,7 @@ def main():
         return
 
 
-    if args.semi3d or args.semi3d_train or args.semi3d_eval:
+    if args.semi3d or args.semi3d_stage1 or args.semi3d_stage2 or args.semi3d_train or args.semi3d_eval:
         from cellpose.semi3d import run_from_cellpose_args
         run_from_cellpose_args(args)
         return
