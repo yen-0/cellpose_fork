@@ -292,145 +292,116 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
 
         grid, cs = _build_spatial_grid(current_nodes, link_dist)
         gpu_candidates = _gpu_prefilter_candidates(active, current_nodes, link_dist, size_tolerance) if gpu_prefilter else None
+        assigned = []
 
+        # 1) Primary linking: ONLY previous slice anchors (z-1), rank by IoU_A then distance.
         for ai, tr in enumerate(active):
             last = tr.nodes[-1]
-            if z - last.z > max_gap:
+            if last.z != (z - 1):
                 continue
-            candidate_node_for_query = last
-            if len(tr.nodes) > 1:
-                candidate_node_for_query = tr.nodes[-1]
-            candidate_idx = gpu_candidates.get(ai, []) if gpu_candidates is not None else _query_neighbors(candidate_node_for_query, grid, cs)
-
+            candidate_idx = gpu_candidates.get(ai, []) if gpu_candidates is not None else _query_neighbors(last, grid, cs)
             best = None
-            best_score = -1e9
-            best_iou_a = -1.0
             for i in candidate_idx:
                 if i in used:
                     continue
                 node = current_nodes[i]
-                anchor_metrics = _best_anchor_metrics(tr, node, max_gap=max_gap, depth=3)
-                if anchor_metrics is None:
+                dist = float(np.linalg.norm(node.centroid - last.centroid))
+                if dist > link_dist:
                     continue
-                anchor, gap, inter, iou_a, iou_b, dist = anchor_metrics
-                if dist > (link_dist * (1.0 + min(1.0, 0.5 * (gap - 1)))):
-                    continue
-                area_ratio = min(anchor.area, node.area) / max(anchor.area, node.area)
-                poly_sim = _polygon_similarity(anchor, node)
-                # IoU A (relative to previous-slice mask) is the highest-priority evidence.
-                score = 0.30 * area_ratio - 0.006 * dist - 0.015 * (gap - 1) + 0.05 * poly_sim
-                if (iou_a > best_iou_a) or (iou_a == best_iou_a and score > best_score):
-                    best_iou_a = iou_a
-                    best_score = score
-                    best = (i, node, anchor, iou_a, iou_b, gap)
-
+                iou_a, _ = _node_overlap_scores(last, node)
+                if best is None or (iou_a > best[2]) or (iou_a == best[2] and dist < best[3]):
+                    best = (i, node, iou_a, dist, last, 1)
             if best is not None:
-                idx, node, anchor, iou_a, iou_b, gap = best
-                if gap == 1:
-                    best_merge_j = None
-                    best_merge_iou_b = -1.0
-                    best_merge_node = None
-                    for j in candidate_idx:
-                        if j in used or j == idx:
-                            continue
-                        n2 = current_nodes[j]
-                        if np.linalg.norm(n2.centroid - node.centroid) <= merge_dist:
-                            _, n2_iou_b = _node_overlap_scores(anchor, n2)
-                            # Merge only as fallback: if this mask cannot attach to any other graph.
-                            can_attach_elsewhere = _has_attachable_graph_for_node(
-                                n2,
-                                active,
-                                max_gap=max_gap,
-                                link_dist=link_dist,
-                                exclude_track_id=tr.track_id,
-                            )
-                            # If IoU_B is high enough and no other graph can take it, merge the best IoU_B candidate.
-                            if (not can_attach_elsewhere) and n2_iou_b > 0.1 and n2_iou_b > best_merge_iou_b:
-                                best_merge_iou_b = n2_iou_b
-                                best_merge_j = j
-                                best_merge_node = n2
-                    if best_merge_node is not None:
-                        node = _merge_nodes([node, best_merge_node])
-                        used.add(best_merge_j)
-                        iou_a, iou_b = _node_overlap_scores(anchor, node)
-
+                idx, node, iou_a, _, anchor, gap = best
                 tr.nodes.append(node)
                 tr.links.append(iou_a)
-                skips = max(0, gap - 1)
-                tr.gap_bridges += skips
-                if skips > 0:
-                    tr.gap_hist[skips] = tr.gap_hist.get(skips, 0) + 1
+                assigned.append((tr, node, anchor, gap))
                 used.add(idx)
 
-        # second-pass forced linking for remaining nodes: aggressively attach to an existing graph.
+        # 2) Leftovers attach using two-slices-before anchors (z-2) for tracks absent at z-1.
+        for i, node in enumerate(current_nodes):
+            if i in used:
+                continue
+            best = None
+            for tr in active:
+                last = tr.nodes[-1]
+                if last.z != (z - 2):
+                    continue
+                dist = float(np.linalg.norm(node.centroid - last.centroid))
+                if dist > (link_dist * 1.5):
+                    continue
+                iou_a, _ = _node_overlap_scores(last, node)
+                if best is None or (iou_a > best[2]) or (iou_a == best[2] and dist < best[3]):
+                    best = (tr, last, iou_a, dist)
+            if best is not None:
+                tr, anchor, iou_a, _ = best
+                tr.nodes.append(node)
+                tr.links.append(iou_a)
+                assigned.append((tr, node, anchor, 2))
+                used.add(i)
+
+        # 3) Merge fallback: only now, using IoU_B from z-1 and z-2 anchors.
+        for tr, base_node, anchor, gap in assigned:
+            if gap not in (1, 2):
+                continue
+            best_merge_j = None
+            best_merge_iou_b = 0.1
+            for j, n2 in enumerate(current_nodes):
+                if j in used:
+                    continue
+                if np.linalg.norm(n2.centroid - base_node.centroid) > merge_dist:
+                    continue
+                # keep attach-first: if this node can still attach to any graph, do not merge it away.
+                if _has_attachable_graph_for_node(n2, active, max_gap=max_gap, link_dist=link_dist, exclude_track_id=tr.track_id):
+                    continue
+                _, iou_b_prev = _node_overlap_scores(anchor, n2)
+                iou_b_two = 0.0
+                if tr.nodes and len(tr.nodes) >= 2:
+                    for old in tr.nodes[:-1][::-1]:
+                        if old.z == (z - 2):
+                            _, iou_b_two = _node_overlap_scores(old, n2)
+                            break
+                iou_b = max(iou_b_prev, iou_b_two)
+                if iou_b > best_merge_iou_b:
+                    best_merge_iou_b = iou_b
+                    best_merge_j = j
+            if best_merge_j is not None:
+                merged = _merge_nodes([base_node, current_nodes[best_merge_j]])
+                tr.nodes[-1] = merged
+                iou_a, _ = _node_overlap_scores(anchor, merged)
+                tr.links[-1] = iou_a
+                used.add(best_merge_j)
+
+        # 4) If still unmatched, try any remaining graph via nearest/overlap before new track.
         leftovers = [i for i in range(len(current_nodes)) if i not in used]
         for i in leftovers:
             node = current_nodes[i]
-            best_ai, best_gap, best_dist = None, None, None
-            best_inter, best_iou_a = -1, -1.0
-            near_ai, near_gap, near_dist = None, None, None
-            radius_gate = 2.0 * float(max(1, node.area))
-            for ai, tr in enumerate(active):
+            best_tr, best_anchor, best_gap, best_iou, best_dist = None, None, None, -1.0, None
+            for tr in active:
                 anchor_metrics = _best_anchor_metrics(tr, node, max_gap=max_gap, depth=3)
                 if anchor_metrics is None:
                     continue
                 anchor, gap, inter, iou_a, _, dist = anchor_metrics
-
-                # Track nearest fallback regardless of quality, used only as last resort.
-                if near_dist is None or dist < near_dist:
-                    near_dist = dist
-                    near_ai = ai
-                    near_gap = gap
-
-                # Strong preference: any overlap, or distance within 2x area radius.
-                if inter <= 0 and dist > radius_gate:
+                if inter <= 0 and dist > 2.0 * float(max(1, node.area)):
                     continue
-
-                if (inter > best_inter) or (inter == best_inter and iou_a > best_iou_a) or (
-                    inter == best_inter and iou_a == best_iou_a and (best_dist is None or dist < best_dist)
-                ):
-                    best_inter = inter
-                    best_iou_a = iou_a
-                    best_dist = dist
-                    best_ai = ai
-                    best_gap = gap
-
-            # If we still could not satisfy overlap/radius rule, attach to nearest active graph.
-            if best_ai is None and near_ai is not None:
-                best_ai, best_gap, best_dist = near_ai, near_gap, near_dist
-                tr_near = active[near_ai]
-                near_anchor = _best_anchor_metrics(tr_near, node, max_gap=max_gap, depth=3)
-                if near_anchor is not None:
-                    near_anchor_node, _, near_inter, near_iou_a, near_iou_b, _ = near_anchor
-                else:
-                    near_anchor_node = tr_near.nodes[-1]
-                    near_inter = _node_intersection(near_anchor_node, node)
-                    near_iou_a, near_iou_b = _node_overlap_scores(near_anchor_node, node)
-                LOGGER.info(
-                    "semi3d forced-nearest attach z=%d inst=%d -> track=%d (anchor_z=%d, gap=%d, dist=%.4f, inter=%d, iou_a=%.6f, iou_b=%.6f, radius_gate=%.4f)",
-                    z, node.instance_id, tr_near.track_id, near_anchor_node.z, best_gap, float(best_dist), near_inter, near_iou_a, near_iou_b, radius_gate
-                )
-
-            if best_ai is None:
-                LOGGER.warning(
-                    "semi3d new-track unavoidable z=%d inst=%d: no active tracks available for connection",
-                    z, node.instance_id
-                )
+                if (iou_a > best_iou) or (iou_a == best_iou and (best_dist is None or dist < best_dist)):
+                    best_tr, best_anchor, best_gap, best_iou, best_dist = tr, anchor, gap, iou_a, dist
+            if best_tr is None:
                 continue
-            tr = active[best_ai]
-            best_anchor = _best_anchor_metrics(tr, node, max_gap=max_gap, depth=3)
-            if best_anchor is not None:
-                anchor_node, _, _, iou, _, _ = best_anchor
-            else:
-                anchor_node = tr.nodes[-1]
-                iou, _ = _node_overlap_scores(anchor_node, node)
-            tr.nodes.append(node)
-            tr.links.append(iou)
+            best_tr.nodes.append(node)
+            best_tr.links.append(best_iou)
             skips = max(0, best_gap - 1)
+            best_tr.gap_bridges += skips
+            if skips > 0:
+                best_tr.gap_hist[skips] = best_tr.gap_hist.get(skips, 0) + 1
+            used.add(i)
+
+        # Apply skip bookkeeping for phase1/phase2 assignments.
+        for tr, _, _, gap in assigned:
+            skips = max(0, gap - 1)
             tr.gap_bridges += skips
             if skips > 0:
                 tr.gap_hist[skips] = tr.gap_hist.get(skips, 0) + 1
-            used.add(i)
 
         for i, node in enumerate(current_nodes):
             if i not in used:

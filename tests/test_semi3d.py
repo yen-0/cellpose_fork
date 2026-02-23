@@ -178,6 +178,29 @@ def test_leftover_falls_back_to_nearest_active_track_not_new_track():
 
 
 
+
+
+def test_primary_prefers_previous_slice_before_two_slice_history():
+    slices = [np.zeros((64, 64), dtype=np.int32) for _ in range(3)]
+    # Track A at z0 and z1, slightly shifted
+    slices[0][20:26, 20:26] = 1
+    slices[1][22:28, 22:28] = 1
+    # Track B only at z0 near the same area (history-only competitor at z2)
+    slices[0][24:30, 24:30] = 2
+    # z2 candidate should link using z1 anchor first, not z0-only history track
+    slices[2][22:28, 22:28] = 3
+
+    tracks = build_association_tracks(slices, link_iou=0.0, link_dist=12.0, max_gap=3)
+
+    t_primary = None
+    for t in tracks:
+        if t.nodes and t.nodes[0].z == 0 and t.nodes[0].instance_id == 1:
+            t_primary = t
+            break
+    assert t_primary is not None
+    zs = [n.z for n in t_primary.nodes]
+    assert 2 in zs
+
 def test_links_back_using_two_to_three_slice_history_when_prev_missing():
     slices = [np.zeros((48, 48), dtype=np.int32) for _ in range(4)]
     # z0 object exists
