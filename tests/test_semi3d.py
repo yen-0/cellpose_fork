@@ -244,6 +244,33 @@ def test_history_anchor_can_beat_last_node_for_reappearance():
 
 
 
+
+
+def test_merge_bypassed_when_hanging_graphs_exist():
+    s0 = np.zeros((96, 96), dtype=np.int32)
+    s1 = np.zeros((96, 96), dtype=np.int32)
+
+    # graph A and B in previous slice
+    s0[20:30, 20:30] = 1
+    s0[60:70, 60:70] = 2
+
+    # only graph A has direct continuation; graph B remains hanging
+    s1[20:30, 20:30] = 3
+    # nearby extra candidate for potential merge into graph A
+    s1[20:30, 31:41] = 4
+
+    tracks = build_association_tracks([s0, s1], link_iou=0.0, link_dist=18.0, max_gap=3, merge_dist=20.0)
+
+    # graph A should not merge candidate 4 while graph B is still hanging
+    tA = None
+    for t in tracks:
+        if t.nodes and t.nodes[0].instance_id == 1:
+            tA = t
+            break
+    assert tA is not None
+    assert len(tA.nodes) == 2
+    assert tA.nodes[-1].area == 100
+
 def test_merge_deferred_when_other_graph_can_attach_candidate():
     s0 = np.zeros((80, 80), dtype=np.int32)
     s1 = np.zeros((80, 80), dtype=np.int32)
