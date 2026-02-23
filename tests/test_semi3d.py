@@ -79,6 +79,45 @@ def test_merge_requires_iou_improvement_only():
     assert len(tracks[0].nodes) == 2
     assert tracks[0].nodes[-1].area >= 60
 
+
+
+def test_matching_prioritizes_highest_iou_a_over_iou_b():
+    s0 = np.zeros((32, 32), dtype=np.int32)
+    s1 = np.zeros((32, 32), dtype=np.int32)
+
+    # previous mask (A): 6x6 block
+    s0[10:16, 10:16] = 1
+    # candidate 2: exact overlap + extra pixels -> IoU A = 1.0, IoU B < 1
+    s1[10:16, 10:16] = 2
+    s1[16:18, 10:16] = 2
+    # candidate 3: strict subset -> IoU B = 1.0, IoU A lower
+    s1[10:14, 10:14] = 3
+
+    tracks = build_association_tracks([s0, s1], link_iou=0.0, link_dist=10.0, max_gap=2)
+    assert len(tracks) >= 2
+
+    linked = [tr for tr in tracks if len(tr.nodes) == 2]
+    assert len(linked) == 1
+    assert linked[0].nodes[1].instance_id == 2
+
+
+def test_merge_uses_iou_b_signal():
+    s0 = np.zeros((48, 48), dtype=np.int32)
+    s1 = np.zeros((48, 48), dtype=np.int32)
+
+    # previous mask A is wide.
+    s0[16:24, 16:32] = 1
+    # node 2 covers left part (not enough IoU B to trigger merge).
+    s1[16:24, 16:24] = 2
+    # node 3 covers right part and should be merged based on IoU B evidence.
+    s1[16:24, 24:32] = 3
+
+    tracks = build_association_tracks([s0, s1], link_iou=0.0, link_dist=20.0, max_gap=2, merge_dist=16.0)
+    assert len(tracks) == 1
+    assert len(tracks[0].nodes) == 2
+    # merged node should recover full previous area
+    assert tracks[0].nodes[-1].area == 128
+
 def test_forced_link_attaches_leftover_with_tiny_iou():
     s0 = np.zeros((64, 64), dtype=np.int32)
     s1 = np.zeros((64, 64), dtype=np.int32)

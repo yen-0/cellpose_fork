@@ -56,7 +56,33 @@ def _node_mask_crop(node: InstanceNode, slice_mask: Optional[np.ndarray] = None)
     return (slice_mask[y0:y1, x0:x1] == node.instance_id)
 
 
+def _node_overlap_scores(node_a: InstanceNode, node_b: InstanceNode,
+                         slice_mask_a: Optional[np.ndarray] = None,
+                         slice_mask_b: Optional[np.ndarray] = None) -> Tuple[float, float]:
+    """Return directed overlap scores.
+
+    IoU A = |A∩B| / |A| where A is the previous/track mask.
+    IoU B = |A∩B| / |B| where B is the current candidate mask.
+    """
+    ay0, ay1, ax0, ax1 = node_a.bbox
+    by0, by1, bx0, bx1 = node_b.bbox
+    iy0, iy1 = max(ay0, by0), min(ay1, by1)
+    ix0, ix1 = max(ax0, bx0), min(ax1, bx1)
+    if iy0 >= iy1 or ix0 >= ix1:
+        return 0.0, 0.0
+
+    a_crop = _node_mask_crop(node_a, slice_mask_a)
+    b_crop = _node_mask_crop(node_b, slice_mask_b)
+    a_view = a_crop[iy0 - ay0:iy1 - ay0, ix0 - ax0:ix1 - ax0]
+    b_view = b_crop[iy0 - by0:iy1 - by0, ix0 - bx0:ix1 - bx0]
+    inter = np.logical_and(a_view, b_view).sum()
+    iou_a = float(inter / node_a.area) if node_a.area > 0 else 0.0
+    iou_b = float(inter / node_b.area) if node_b.area > 0 else 0.0
+    return iou_a, iou_b
+
+
 def _node_iou(node_a: InstanceNode, node_b: InstanceNode, slice_mask_a: Optional[np.ndarray] = None, slice_mask_b: Optional[np.ndarray] = None) -> float:
+    # Backward-compatible undirected IoU helper for callers that still expect it.
     ay0, ay1, ax0, ax1 = node_a.bbox
     by0, by1, bx0, bx1 = node_b.bbox
     iy0, iy1 = max(ay0, by0), min(ay1, by1)
@@ -206,6 +232,7 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
 
             best = None
             best_score = -1e9
+            best_iou_a = -1.0
             for i in candidate_idx:
                 if i in used:
                     continue
@@ -218,15 +245,16 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                     continue
                 area_ratio = min(last.area, node.area) / max(last.area, node.area)
                 poly_sim = _polygon_similarity(last, node)
-                iou = _node_iou(last, node)
-                # Never hard-reject by low IoU: keep weak-overlap motion matches eligible.
-                score = iou + 0.30 * area_ratio - 0.006 * dist - 0.015 * (gap - 1) + 0.05 * poly_sim
-                if score > best_score:
+                iou_a, iou_b = _node_overlap_scores(last, node)
+                # IoU A (relative to previous-slice mask) is the highest-priority evidence.
+                score = 0.30 * area_ratio - 0.006 * dist - 0.015 * (gap - 1) + 0.05 * poly_sim
+                if (iou_a > best_iou_a) or (iou_a == best_iou_a and score > best_score):
+                    best_iou_a = iou_a
                     best_score = score
-                    best = (i, node, iou, gap)
+                    best = (i, node, iou_a, iou_b, gap)
 
             if best is not None:
-                idx, node, iou, gap = best
+                idx, node, iou_a, iou_b, gap = best
                 merge_nodes = [node]
                 if gap == 1:
                     for j in candidate_idx:
@@ -235,19 +263,20 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                         n2 = current_nodes[j]
                         if np.linalg.norm(n2.centroid - node.centroid) <= merge_dist:
                             test = _merge_nodes([node, n2])
-                            merged_iou = _node_iou(last, test)
-                            # Merge decision based ONLY on IoU improvement.
-                            if merged_iou > iou:
+                            _, n2_iou_b = _node_overlap_scores(last, n2)
+                            _, merged_iou_b = _node_overlap_scores(last, test)
+                            # Merge decision uses ONLY IoU B evidence (candidate-denominator overlap).
+                            if n2_iou_b >= 0.5 and merged_iou_b >= iou_b:
                                 merge_nodes.append(n2)
                                 used.add(j)
                                 node = test
-                                iou = merged_iou
+                                iou_b = merged_iou_b
                     if len(merge_nodes) > 1:
                         node = _merge_nodes(merge_nodes)
-                        iou = _node_iou(last, node)
+                        iou_a, iou_b = _node_overlap_scores(last, node)
 
                 tr.nodes.append(node)
-                tr.links.append(iou)
+                tr.links.append(iou_a)
                 skips = max(0, gap - 1)
                 tr.gap_bridges += skips
                 if skips > 0:
@@ -275,7 +304,7 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                 continue
             tr = active[best_ai]
             last = tr.nodes[-1]
-            iou = _node_iou(last, node)
+            iou, _ = _node_overlap_scores(last, node)
             tr.nodes.append(node)
             tr.links.append(iou)
             skips = max(0, best_gap - 1)
