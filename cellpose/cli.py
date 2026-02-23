@@ -301,6 +301,14 @@ def get_arg_parser():
                              help="use hybrid GPU prefilter (distance/size gating) during stage2 linking")
     semi3d_args.add_argument("--semi3d_merge_dist", default=12.0, type=float,
                              help="max centroid distance to merge split detections within a slice")
+    semi3d_args.add_argument("--semi3d_merge_iou_b_min", default=0.35, type=float,
+                             help="minimum IoU_B required for within-slice merge fallback")
+    semi3d_args.add_argument("--semi3d_merge_competition_margin", default=0.1, type=float,
+                             help="required IoU margin over alternative graph matches before merging")
+    semi3d_args.add_argument("--semi3d_short_track_merge_len", default=2, type=int,
+                             help="maximum track length considered as newly-emerged short graph for post-link merge")
+    semi3d_args.add_argument("--semi3d_short_track_merge_iou_b_min", default=None, type=float,
+                             help="minimum raw IoU_B needed to merge short graphs into longer tracks (default derives from merge_iou_b_min)")
     semi3d_args.add_argument("--semi3d_allow_overlap_recon", action="store_true",
                              help="allow reconstructed masks to overlap already-established masks")
     semi3d_args.add_argument("--semi3d_recon_min_free_fraction", default=0.25, type=float,
