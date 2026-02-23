@@ -293,6 +293,8 @@ def get_arg_parser():
                              help="save stage1 flow hints for stage2 reconstruction")
     semi3d_args.add_argument("--semi3d_save_debug_tiff", action="store_true",
                              help="save debug maps (flow magnitude / probability / refiner keep prob) as TIFF")
+    semi3d_args.add_argument("--semi3d_save_link_debug", action="store_true",
+                             help="save stage2 link decision overlays and JSON records")
     semi3d_args.add_argument("--semi3d_stage2_use_gpu", action="store_true",
                              help="use GPU acceleration for stage2 refiner scoring when available")
     semi3d_args.add_argument("--semi3d_memmap_stage2_inputs", action="store_true",

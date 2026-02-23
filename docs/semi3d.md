@@ -66,6 +66,10 @@ Inference outputs include:
 - `semi3d_refined_masks.tif`: final per-slice labels.
 - `semi3d_track_labels.tif` (optional): z-consistent track labels.
 - `semi3d_reconstructed_flags.tif`: binary map where reconstructed (not directly detected) pixels are marked as 1.
+- `semi3d_link_debug_overlay.tif` (optional): RGB overlay with node->track assignment and short reason text.
+- `semi3d_link_debug_reason_codes.tif` (optional): per-pixel reason code map for link outcomes.
+- `semi3d_link_debug_track_ids.tif` (optional): per-pixel track ID map from linking stage debug.
+- `semi3d_link_debug_records.json` (optional): structured per-slice node/track decision reasons.
 
 Outputs JSON metrics including:
 - Dice / IoU mean (slice-wise)
@@ -150,6 +154,7 @@ Useful flags:
 
 Stage2 linking now performs confidence-ordered global assignment with a sparse-candidate fallback: if only one plausible candidate remains for a track in a slice neighborhood, weak-overlap links can still be retained.
 - `--semi3d_save_debug_tiff` (save debug flow/prob/refiner maps as TIFF)
+- `--semi3d_save_link_debug` (save per-slice link decision overlays + reason maps + JSON records)
 - `--semi3d_max_gap` (supports 2+ skips)
 - `--use_gpu` for accelerated stage1 inference
 - `--semi3d_refiner_linear` to force linear model; nonlinear refiner is default
@@ -216,7 +221,7 @@ cellpose --semi3d_stage2 \
   --semi3d_recon_min_free_fraction 0.25 \
   --semi3d_refiner_model /path/to/model_out/semi3d_refiner.npz \
   --semi3d_refiner_threshold 0.5 \
-  --semi3d_save_debug_tiff --verbose
+  --semi3d_save_debug_tiff --semi3d_save_link_debug --verbose
 ```
 
 ### Refiner training (prob-on by default, minibatch)

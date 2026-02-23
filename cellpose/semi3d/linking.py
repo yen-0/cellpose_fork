@@ -252,14 +252,28 @@ def _compact_track_history(active: List[Track], keep_recent: int = 2):
 
 
 def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tolerance=0.6,
-                             max_gap=3, gpu_prefilter=False, merge_dist=12.0, link_workers=1):
+                             max_gap=3, gpu_prefilter=False, merge_dist=12.0, link_workers=1,
+                             return_debug=False):
     tracks: List[Track] = []
     active: List[Track] = []
     next_track_id = 1
+    debug_records = []
 
     for z in range(len(slice_masks)):
         current_nodes = _extract_nodes_for_slice(slice_masks[z], z)
         used = set()
+
+        node_debug = []
+        for i, n in enumerate(current_nodes):
+            node_debug.append({
+                "node_index": int(i),
+                "instance_id": int(n.instance_id),
+                "centroid": [float(n.centroid[0]), float(n.centroid[1])],
+                "track_id": None,
+                "status": "unprocessed",
+                "reason": "",
+                "score": None,
+            })
 
         grid, cs = _build_spatial_grid(current_nodes, link_dist)
         gpu_candidates = _gpu_prefilter_candidates(active, current_nodes, link_dist, size_tolerance, grid=grid, cell_size=cs) if gpu_prefilter else None
@@ -303,8 +317,14 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                 ))
 
         all_edges.sort(key=lambda e: e[0], reverse=True)
+        candidate_nodes = {idx for _, _, idx, _, _ in all_edges}
+        best_score_by_node = {}
+        for sc, _, idx, _, _ in all_edges:
+            if idx not in best_score_by_node or sc > best_score_by_node[idx]:
+                best_score_by_node[idx] = float(sc)
+
         claimed_tracks = set()
-        for _, ai, idx, iou, gap in all_edges:
+        for score, ai, idx, iou, gap in all_edges:
             if ai in claimed_tracks or idx in used:
                 continue
             tr = active[ai]
@@ -313,6 +333,7 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
             candidate_idx = gpu_candidates.get(ai, []) if gpu_candidates is not None else _query_neighbors(last, grid, cs)
 
             merge_nodes = [node]
+            merged_idx = []
             if gap == 1:
                 for j in candidate_idx:
                     if j in used or j == idx:
@@ -323,6 +344,7 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                         merged_iou = _node_iou(last, test)
                         if merged_iou >= iou - 0.03:
                             merge_nodes.append(n2)
+                            merged_idx.append(j)
                             used.add(j)
                 if len(merge_nodes) > 1:
                     node = _merge_nodes(merge_nodes)
@@ -338,6 +360,20 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
             used.add(idx)
             claimed_tracks.add(ai)
 
+            node_debug[idx].update({
+                "track_id": int(tr.track_id),
+                "status": "assigned",
+                "reason": "best_scored_edge",
+                "score": float(score),
+            })
+            for j in merged_idx:
+                node_debug[j].update({
+                    "track_id": int(tr.track_id),
+                    "status": "merged",
+                    "reason": f"merged_into_node_{idx}",
+                    "score": float(score),
+                })
+
         for i, node in enumerate(current_nodes):
             if i not in used:
                 tr = Track(track_id=next_track_id, nodes=[node])
@@ -345,10 +381,41 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                 tracks.append(tr)
                 active.append(tr)
 
+                if i in candidate_nodes:
+                    reason = "omitted_by_higher_score_or_track_claim"
+                else:
+                    reason = "no_valid_link_started_new_track"
+                node_debug[i].update({
+                    "track_id": int(tr.track_id),
+                    "status": "new_track",
+                    "reason": reason,
+                    "score": best_score_by_node.get(i, None),
+                })
+
+        if return_debug:
+            track_debug = []
+            for ai, tr in enumerate(active):
+                last = tr.nodes[-1]
+                if z - last.z > max_gap:
+                    status = "inactive_gap"
+                elif ai in claimed_tracks:
+                    status = "linked"
+                else:
+                    cand = gpu_candidates.get(ai, []) if gpu_candidates is not None else _query_neighbors(last, grid, cs)
+                    status = "no_link" if len(cand) else "no_neighbor_candidate"
+                track_debug.append({
+                    "track_id": int(tr.track_id),
+                    "last_z": int(last.z),
+                    "status": status,
+                })
+            debug_records.append({"z": int(z), "nodes": node_debug, "tracks": track_debug})
+
         # memory reuse: periodically compact historical masks on long active tracks.
         if z % 8 == 0:
             _compact_track_history(active, keep_recent=2)
 
         active = [t for t in active if z - t.nodes[-1].z < max_gap]
 
+    if return_debug:
+        return tracks, debug_records
     return tracks
