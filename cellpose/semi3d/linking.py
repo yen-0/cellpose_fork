@@ -207,8 +207,7 @@ def _collect_track_candidates(ai, tr, z, current_nodes, used, candidate_idx, lin
     if z - last.z > max_gap:
         return []
 
-    sparse_pool = len(candidate_idx) <= 1
-    edges = []
+    cand = []
     for i in candidate_idx:
         if i in used:
             continue
@@ -216,30 +215,36 @@ def _collect_track_candidates(ai, tr, z, current_nodes, used, candidate_idx, lin
         gap = node.z - last.z
         if gap < 1 or gap > max_gap:
             continue
+        dist = float(np.linalg.norm(node.centroid - last.centroid))
+        area_ratio = float(min(last.area, node.area) / max(last.area, node.area))
+        cand.append((i, node, gap, dist, area_ratio))
+    if not cand:
+        return []
 
-        dist = np.linalg.norm(node.centroid - last.centroid)
-        dyn_dist = link_dist * (1.0 + min(1.1, 0.35 * (gap - 1)))
-        if dist > dyn_dist:
+    sparse_pool = len(cand) <= 1
+    closest_idx = min(cand, key=lambda t: t[3])[0]
+    edges = []
+    for i, node, gap, dist, area_ratio in cand:
+        dyn_dist = link_dist * (1.35 + min(1.8, 0.80 * (gap - 1)))
+        if dist > dyn_dist and i != closest_idx:
             continue
 
-        area_ratio = min(last.area, node.area) / max(last.area, node.area)
-        area_floor = size_tolerance * 0.70 * (1.0 - min(0.40, 0.12 * (gap - 1)))
+        # area is a relative soft constraint; keep it permissive for sparse/closest leftovers.
+        area_floor = size_tolerance * 0.30 * (1.0 - min(0.45, 0.15 * (gap - 1)))
         if sparse_pool:
-            area_floor *= 0.50
-        # prevent pathological large->tiny assignment except in sparse fallback.
-        if last.area > 2.8 * node.area and not sparse_pool:
-            continue
-        if area_ratio < area_floor:
+            area_floor *= 0.35
+        if area_ratio < area_floor and (i != closest_idx):
             continue
 
         poly_sim = _polygon_similarity(last, node)
         iou = _node_iou(last, node)
-        weak_link = (iou < (link_iou * 0.35) and gap == 1 and poly_sim < 0.18)
-        if weak_link and not sparse_pool:
+        weak_link = (iou < (link_iou * 0.15) and gap == 1 and poly_sim < 0.08)
+        if weak_link and not sparse_pool and i != closest_idx:
             continue
 
+        closest_bonus = 0.20 if i == closest_idx else 0.0
         sparse_bonus = 0.18 if sparse_pool and weak_link else 0.0
-        score = iou + 0.65 * area_ratio + 0.15 * poly_sim - 0.008 * dist - 0.015 * (gap - 1) + sparse_bonus
+        score = iou + 0.45 * area_ratio + 0.12 * poly_sim - 0.005 * dist - 0.010 * (gap - 1) + sparse_bonus + closest_bonus
         edges.append((score, ai, i, iou, gap))
     return edges
 
@@ -353,7 +358,48 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
             tr = active[ai]
             last = tr.nodes[-1]
             node = current_nodes[idx]
+            candidate_idx = gpu_candidates.get(ai, []) if gpu_candidates is not None else _query_neighbors(last, grid, cs)
             merged_idx = []
+
+            # split-aware combine: allow one previous mask to map to multiple components in current slice
+            # when combined mask matches previous area/shape better.
+            if gap == 1:
+                cur_node = node
+                cur_iou = float(iou)
+                cur_area_err = abs(cur_node.area - last.area) / (last.area + 1e-6)
+                improved = True
+                while improved:
+                    improved = False
+                    best_j = None
+                    best_candidate = None
+                    best_err = cur_area_err
+                    best_iou = cur_iou
+                    for j in candidate_idx:
+                        if j in used or j == idx or j in merged_idx:
+                            continue
+                        n2 = current_nodes[j]
+                        if n2.z != cur_node.z:
+                            continue
+                        dist2 = np.linalg.norm(n2.centroid - cur_node.centroid)
+                        if dist2 > (merge_dist * 1.8):
+                            continue
+                        test = _merge_nodes([cur_node, n2])
+                        test_iou = _node_iou(last, test)
+                        test_err = abs(test.area - last.area) / (last.area + 1e-6)
+                        if (test_err < best_err - 0.05 and test_iou >= cur_iou - 0.10) or (test_iou > best_iou + 0.08):
+                            best_j = j
+                            best_candidate = test
+                            best_err = test_err
+                            best_iou = test_iou
+                    if best_j is not None:
+                        merged_idx.append(best_j)
+                        cur_node = best_candidate
+                        cur_iou = best_iou
+                        cur_area_err = best_err
+                        improved = True
+                if merged_idx:
+                    node = cur_node
+                    iou = cur_iou
 
             last.compact()
             tr.nodes.append(node)
@@ -363,6 +409,8 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
             if skips > 0:
                 tr.gap_hist[skips] = tr.gap_hist.get(skips, 0) + 1
             used.add(idx)
+            for j in merged_idx:
+                used.add(j)
             claimed_tracks.add(ai)
 
             node_debug[idx].update({
@@ -375,7 +423,7 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                 node_debug[j].update({
                     "track_id": int(tr.track_id),
                     "status": "merged",
-                    "reason": f"merged_into_node_{idx}",
+                    "reason": f"split_component_merged_into_{idx}",
                     "score": float(score),
                 })
 
@@ -396,9 +444,7 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                 if dist > (link_dist * 2.2):
                     continue
                 area_ratio = min(last.area, node.area) / max(last.area, node.area)
-                if area_ratio < 0.12:
-                    continue
-                score = 0.70 * area_ratio - 0.006 * dist - 0.02 * (gap - 1)
+                score = 0.30 * area_ratio - 0.004 * dist - 0.02 * (gap - 1)
                 if score > best_score:
                     best_score = score
                     best = (ai, tr, gap)

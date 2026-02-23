@@ -64,6 +64,30 @@ def test_sparse_fallback_allows_low_overlap_link_when_only_candidate_left():
     assert len(tracks) == 1
     assert len(tracks[0].nodes) == 2
 
+
+
+def test_split_into_two_components_merges_for_same_track():
+    s0 = np.zeros((40, 40), dtype=np.int32)
+    s1 = np.zeros((40, 40), dtype=np.int32)
+    s0[12:20, 12:20] = 1
+    s1[12:16, 12:20] = 2
+    s1[16:20, 12:20] = 3
+
+    tracks = build_association_tracks([s0, s1], link_iou=0.0, link_dist=20.0, max_gap=2)
+    assert len(tracks) == 1
+    assert len(tracks[0].nodes) == 2
+    assert tracks[0].nodes[-1].area >= 60
+
+
+def test_closest_leftover_can_link_without_overlap():
+    s0 = np.zeros((48, 48), dtype=np.int32)
+    s1 = np.zeros((48, 48), dtype=np.int32)
+    s0[10:16, 10:16] = 1
+    s1[18:24, 10:16] = 2  # disjoint but nearest plausible continuation
+
+    tracks = build_association_tracks([s0, s1], link_iou=0.2, link_dist=16.0, max_gap=2)
+    assert len(tracks) == 1
+    assert len(tracks[0].nodes) == 2
 def test_edge_fill_reconstructs_first_and_last_slices():
     s0 = np.zeros((32, 32), dtype=np.int32)
     s1 = np.zeros((32, 32), dtype=np.int32)
