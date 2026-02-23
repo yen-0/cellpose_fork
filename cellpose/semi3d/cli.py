@@ -3,9 +3,8 @@ import random
 import logging
 from types import SimpleNamespace
 import numpy as np
-from scipy.ndimage import gaussian_filter, label, distance_transform_edt, maximum_filter
+from scipy.ndimage import gaussian_filter
 from cellpose import io, models
-from skimage.segmentation import watershed
 from .linking import build_association_tracks
 from .refine import relabel_tracks
 from .training.train import run_training, extract_track_features
@@ -82,19 +81,31 @@ def _extract_debug_maps(flows):
 
 
 
-def _defog_probability(prob_slice, bg_percentile=5.0, hi_percentile=97.0, gamma=0.9, bg_sigma=40.0):
+def _defog_probability(prob_slice, bg_percentile=2.0, hi_percentile=98.0, gamma=0.85,
+                       bg_sigma=50.0, boundary_sigma=1.2, boundary_strength=0.35):
     p = np.asarray(prob_slice, dtype=np.float32)
     if p.ndim > 2:
         p = np.squeeze(p)
 
-    # Estimate low-frequency fog field B(x,y) and subtract it before global stretching.
+    # Remove low-frequency fog field.
     if bg_sigma is not None and bg_sigma > 0:
         b = gaussian_filter(p, sigma=float(bg_sigma))
         p_flat = p - b
     else:
         p_flat = p.copy()
-
     p_flat = p_flat - float(np.min(p_flat))
+
+    # Darken boundaries using gradient magnitude so borders become clearer.
+    if boundary_strength > 0:
+        gx = np.gradient(p_flat, axis=1)
+        gy = np.gradient(p_flat, axis=0)
+        gmag = np.sqrt(gx.astype(np.float32) ** 2 + gy.astype(np.float32) ** 2)
+        if boundary_sigma is not None and boundary_sigma > 0:
+            gmag = gaussian_filter(gmag, sigma=float(boundary_sigma))
+        gmag = gmag / (float(gmag.max()) + 1e-6)
+        p_flat = p_flat - float(boundary_strength) * gmag * (float(np.percentile(p_flat, 95)) + 1e-6)
+        p_flat = p_flat - float(np.min(p_flat))
+
     hi = float(np.percentile(p_flat, hi_percentile))
     bg = float(np.percentile(p_flat, bg_percentile))
     if hi <= bg + 1e-6:
@@ -105,37 +116,6 @@ def _defog_probability(prob_slice, bg_percentile=5.0, hi_percentile=97.0, gamma=
     if gamma != 1.0:
         q = np.power(q, float(gamma), dtype=np.float32)
     return q.astype(np.float32)
-
-def _masks_from_probability(prob_slice, threshold=0.35, min_area=20, peak_min_dist=7):
-    pm = np.asarray(prob_slice, dtype=np.float32)
-    if pm.ndim > 2:
-        pm = np.squeeze(pm)
-
-    fg = pm >= float(threshold)
-    if not np.any(fg):
-        return np.zeros(pm.shape, dtype=np.int32)
-
-    # Border-aware splitting: distance-transform peaks + watershed inside foreground.
-    dist = distance_transform_edt(fg)
-    local_max = dist == maximum_filter(dist, size=max(3, int(peak_min_dist) * 2 + 1))
-    peak_mask = np.logical_and(local_max, dist > 1.0)
-    markers, _ = label(peak_mask)
-    if np.max(markers) == 0:
-        markers, _ = label(fg)
-
-    labels_ws = watershed(-dist, markers=markers, mask=fg)
-
-    out = np.zeros(pm.shape, dtype=np.int32)
-    next_id = 1
-    for inst_id in np.unique(labels_ws):
-        if inst_id <= 0:
-            continue
-        comp = labels_ws == inst_id
-        if comp.sum() < int(min_area):
-            continue
-        out[comp] = next_id
-        next_id += 1
-    return out
 
 
 def _run_stage1(args):
@@ -152,7 +132,7 @@ def _run_stage1(args):
 
     LOGGER.info("[semi3d:stage1] starting per-slice inference (%d slices)", stack.shape[0])
     for z in range(stack.shape[0]):
-        masks_raw, flows, *_ = model.eval(stack[z], do_3D=False, diameter=args.diameter, cellprob_threshold=getattr(args, "stage1_cellprob_threshold", 0.0))
+        _, flows, *_ = model.eval(stack[z], do_3D=False, diameter=args.diameter, cellprob_threshold=getattr(args, "stage1_cellprob_threshold", 0.0))
         flow_slice, flow_mag, prob_slice = _extract_debug_maps(flows)
         per_slice_flows.append(flow_slice)
         per_slice_flow_mag.append(flow_mag)
@@ -160,21 +140,20 @@ def _run_stage1(args):
         if prob_slice is not None and getattr(args, "stage1_defog_prob", True):
             prob_slice = _defog_probability(
                 prob_slice,
-                bg_percentile=getattr(args, "stage1_prob_bg_percentile", 5.0),
-                hi_percentile=getattr(args, "stage1_prob_hi_percentile", 97.0),
-                gamma=getattr(args, "stage1_prob_gamma", 0.9),
-                bg_sigma=getattr(args, "stage1_prob_bg_sigma", 40.0),
+                bg_percentile=getattr(args, "stage1_prob_bg_percentile", 2.0),
+                hi_percentile=getattr(args, "stage1_prob_hi_percentile", 98.0),
+                gamma=getattr(args, "stage1_prob_gamma", 0.85),
+                bg_sigma=getattr(args, "stage1_prob_bg_sigma", 50.0),
+                boundary_sigma=getattr(args, "stage1_prob_boundary_sigma", 1.2),
+                boundary_strength=getattr(args, "stage1_prob_boundary_strength", 0.35),
             )
 
-        if prob_slice is not None and getattr(args, "stage1_masks_from_defog_prob", False):
-            masks = _masks_from_probability(
-                prob_slice,
-                threshold=getattr(args, "stage1_mask_prob_threshold", 0.35),
-                min_area=getattr(args, "stage1_mask_min_area", 20),
-                peak_min_dist=getattr(args, "stage1_mask_peak_min_dist", 7),
-            )
+        if prob_slice is not None and getattr(args, "stage1_use_defog_prob_for_cellpose", True):
+            masks, *_ = model.eval(prob_slice.astype(np.float32), do_3D=False, diameter=args.diameter,
+                                   cellprob_threshold=getattr(args, "stage1_cellprob_threshold", 0.0))
         else:
-            masks = masks_raw.astype(np.int32)
+            masks, *_ = model.eval(stack[z], do_3D=False, diameter=args.diameter,
+                                   cellprob_threshold=getattr(args, "stage1_cellprob_threshold", 0.0))
 
         masks = _remove_border_instances(masks.astype(np.int32), args.border_exclusion_px)
         per_slice_masks.append(masks)
@@ -357,10 +336,9 @@ def run_from_cellpose_args(args):
             stage1_prob_gamma=args.semi3d_stage1_prob_gamma,
             stage1_prob_bg_sigma=args.semi3d_stage1_prob_bg_sigma,
             stage1_cellprob_threshold=args.semi3d_stage1_cellprob_threshold,
-            stage1_masks_from_defog_prob=args.semi3d_stage1_masks_from_defog_prob,
-            stage1_mask_prob_threshold=args.semi3d_stage1_mask_prob_threshold,
-            stage1_mask_min_area=args.semi3d_stage1_mask_min_area,
-            stage1_mask_peak_min_dist=args.semi3d_stage1_mask_peak_min_dist,
+            stage1_use_defog_prob_for_cellpose=not args.semi3d_disable_stage1_use_defog_prob_for_cellpose,
+            stage1_prob_boundary_sigma=args.semi3d_stage1_prob_boundary_sigma,
+            stage1_prob_boundary_strength=args.semi3d_stage1_prob_boundary_strength,
         )
         total, kept = _run_inference(semi_args)
         print(f"semi3d complete: tracks={total}, kept={kept}")
@@ -387,10 +365,9 @@ def run_from_cellpose_args(args):
             stage1_prob_gamma=args.semi3d_stage1_prob_gamma,
             stage1_prob_bg_sigma=args.semi3d_stage1_prob_bg_sigma,
             stage1_cellprob_threshold=args.semi3d_stage1_cellprob_threshold,
-            stage1_masks_from_defog_prob=args.semi3d_stage1_masks_from_defog_prob,
-            stage1_mask_prob_threshold=args.semi3d_stage1_mask_prob_threshold,
-            stage1_mask_min_area=args.semi3d_stage1_mask_min_area,
-            stage1_mask_peak_min_dist=args.semi3d_stage1_mask_peak_min_dist,
+            stage1_use_defog_prob_for_cellpose=not args.semi3d_disable_stage1_use_defog_prob_for_cellpose,
+            stage1_prob_boundary_sigma=args.semi3d_stage1_prob_boundary_sigma,
+            stage1_prob_boundary_strength=args.semi3d_stage1_prob_boundary_strength,
         )
         path = _run_stage1(semi_args)
         print(f"semi3d stage1 complete: {path}")
