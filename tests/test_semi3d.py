@@ -79,6 +79,45 @@ def test_merge_requires_iou_improvement_only():
     assert len(tracks[0].nodes) == 2
     assert tracks[0].nodes[-1].area >= 60
 
+
+
+def test_matching_prioritizes_highest_iou_a_over_iou_b():
+    s0 = np.zeros((32, 32), dtype=np.int32)
+    s1 = np.zeros((32, 32), dtype=np.int32)
+
+    # previous mask (A): 6x6 block
+    s0[10:16, 10:16] = 1
+    # candidate 2: exact overlap + extra pixels -> IoU A = 1.0, IoU B < 1
+    s1[10:16, 10:16] = 2
+    s1[16:18, 10:16] = 2
+    # candidate 3: strict subset -> IoU B = 1.0, IoU A lower
+    s1[10:14, 10:14] = 3
+
+    tracks = build_association_tracks([s0, s1], link_iou=0.0, link_dist=10.0, max_gap=2)
+    assert len(tracks) >= 2
+
+    linked = [tr for tr in tracks if len(tr.nodes) == 2]
+    assert len(linked) == 1
+    assert linked[0].nodes[1].instance_id == 2
+
+
+def test_merge_uses_iou_b_signal():
+    s0 = np.zeros((48, 48), dtype=np.int32)
+    s1 = np.zeros((48, 48), dtype=np.int32)
+
+    # previous mask A is wide.
+    s0[16:24, 16:32] = 1
+    # node 2 covers left part (not enough IoU B to trigger merge).
+    s1[16:24, 16:24] = 2
+    # node 3 covers right part and should be merged based on IoU B evidence.
+    s1[16:24, 24:32] = 3
+
+    tracks = build_association_tracks([s0, s1], link_iou=0.0, link_dist=20.0, max_gap=2, merge_dist=16.0)
+    assert len(tracks) == 1
+    assert len(tracks[0].nodes) == 2
+    # merged node should recover full previous area
+    assert tracks[0].nodes[-1].area == 128
+
 def test_forced_link_attaches_leftover_with_tiny_iou():
     s0 = np.zeros((64, 64), dtype=np.int32)
     s1 = np.zeros((64, 64), dtype=np.int32)
@@ -106,6 +145,200 @@ def test_edge_fill_reconstructs_first_and_last_slices():
     assert np.any(flags[0] > 0)
     assert np.any(flags[3] > 0)
 
+
+
+
+def test_leftover_prefers_overlap_or_area_radius_before_new_track():
+    s0 = np.zeros((64, 64), dtype=np.int32)
+    s1 = np.zeros((64, 64), dtype=np.int32)
+
+    # active track from first slice
+    s0[8:14, 8:14] = 1
+    # leftover node with tiny overlap (single pixel) should still attach
+    s1[13:19, 13:19] = 2
+
+    tracks = build_association_tracks([s0, s1], link_iou=0.9, link_dist=2.0, max_gap=2)
+    assert len(tracks) == 1
+    assert len(tracks[0].nodes) == 2
+
+
+def test_leftover_falls_back_to_nearest_active_track_not_new_track():
+    s0 = np.zeros((96, 96), dtype=np.int32)
+    s1 = np.zeros((96, 96), dtype=np.int32)
+
+    s0[10:16, 10:16] = 1
+    s0[70:76, 70:76] = 2
+    # New node far from both with no overlap and outside 2*area radius gate
+    s1[40:46, 40:46] = 3
+
+    tracks = build_association_tracks([s0, s1], link_iou=0.9, link_dist=2.0, max_gap=2)
+    # Should connect to some existing graph instead of creating a third one
+    assert len(tracks) == 2
+    assert sorted(len(t.nodes) for t in tracks) == [1, 2]
+
+
+
+
+
+def test_primary_prefers_previous_slice_before_two_slice_history():
+    slices = [np.zeros((64, 64), dtype=np.int32) for _ in range(3)]
+    # Track A at z0 and z1, slightly shifted
+    slices[0][20:26, 20:26] = 1
+    slices[1][22:28, 22:28] = 1
+    # Track B only at z0 near the same area (history-only competitor at z2)
+    slices[0][24:30, 24:30] = 2
+    # z2 candidate should link using z1 anchor first, not z0-only history track
+    slices[2][22:28, 22:28] = 3
+
+    tracks = build_association_tracks(slices, link_iou=0.0, link_dist=12.0, max_gap=3)
+
+    t_primary = None
+    for t in tracks:
+        if t.nodes and t.nodes[0].z == 0 and t.nodes[0].instance_id == 1:
+            t_primary = t
+            break
+    assert t_primary is not None
+    zs = [n.z for n in t_primary.nodes]
+    assert 2 in zs
+
+def test_links_back_using_two_to_three_slice_history_when_prev_missing():
+    slices = [np.zeros((48, 48), dtype=np.int32) for _ in range(4)]
+    # z0 object exists
+    slices[0][20:26, 20:26] = 1
+    # z1 object missing (dropout)
+    # z2 object reappears and should reconnect to original track via history
+    slices[2][21:27, 21:27] = 2
+
+    tracks = build_association_tracks(slices, link_iou=0.0, link_dist=8.0, max_gap=3)
+
+    linked = [t for t in tracks if len(t.nodes) >= 2]
+    assert len(linked) == 1
+    zs = [n.z for n in linked[0].nodes]
+    assert 0 in zs and 2 in zs
+    assert linked[0].gap_hist.get(1, 0) >= 1
+
+
+def test_history_anchor_can_beat_last_node_for_reappearance():
+    slices = [np.zeros((80, 80), dtype=np.int32) for _ in range(4)]
+    # Track A exists at z0 near (10,10), then drifts away at z1
+    slices[0][8:14, 8:14] = 1
+    slices[1][48:54, 48:54] = 3
+    # Track B at z1 near reappearance location
+    slices[1][10:16, 10:16] = 2
+    # reappearance at z2 should use recent history (z0 anchor) and link back to track A
+    slices[2][9:15, 9:15] = 4
+
+    tracks = build_association_tracks(slices, link_iou=0.0, link_dist=8.0, max_gap=3)
+
+    # find track that started from z0 id=1
+    t0 = None
+    for t in tracks:
+        if t.nodes and t.nodes[0].z == 0 and t.nodes[0].instance_id == 1:
+            t0 = t
+            break
+    assert t0 is not None
+    zs = [n.z for n in t0.nodes]
+    assert 2 in zs
+
+
+
+
+
+
+
+def test_merge_bypassed_when_hanging_graphs_exist():
+    s0 = np.zeros((96, 96), dtype=np.int32)
+    s1 = np.zeros((96, 96), dtype=np.int32)
+
+    # graph A and B in previous slice
+    s0[20:30, 20:30] = 1
+    s0[60:70, 60:70] = 2
+
+    # only graph A has direct continuation; graph B remains hanging
+    s1[20:30, 20:30] = 3
+    # nearby extra candidate for potential merge into graph A
+    s1[20:30, 31:41] = 4
+
+    tracks = build_association_tracks([s0, s1], link_iou=0.0, link_dist=18.0, max_gap=3, merge_dist=20.0)
+
+    # graph A should not merge candidate 4 while graph B is still hanging
+    tA = None
+    for t in tracks:
+        if t.nodes and t.nodes[0].instance_id == 1:
+            tA = t
+            break
+    assert tA is not None
+    assert len(tA.nodes) == 2
+    assert tA.nodes[-1].area == 100
+
+def test_merge_deferred_when_other_graph_can_attach_candidate():
+    s0 = np.zeros((80, 80), dtype=np.int32)
+    s1 = np.zeros((80, 80), dtype=np.int32)
+
+    # two existing graphs on previous slice
+    s0[20:30, 20:30] = 1
+    s0[20:30, 35:45] = 2
+
+    # candidate chosen by graph 1
+    s1[20:30, 20:30] = 3
+    # high-IoU_B candidate for graph 1, but also a strong direct attach for graph 2
+    s1[20:30, 35:45] = 4
+
+    tracks = build_association_tracks([s0, s1], link_iou=0.0, link_dist=20.0, max_gap=2, merge_dist=25.0)
+
+    # both graphs should attach separately; candidate 4 should not be merged into graph 1
+    assert len(tracks) == 2
+    assert all(len(t.nodes) == 2 for t in tracks)
+    assert sorted(t.nodes[-1].area for t in tracks) == [100, 100]
+
+def test_merge_chooses_single_highest_iou_b_above_threshold():
+    s0 = np.zeros((64, 64), dtype=np.int32)
+    s1 = np.zeros((64, 64), dtype=np.int32)
+
+    # anchor mask
+    s0[20:30, 20:30] = 1
+    # selected node candidate
+    s1[20:30, 20:25] = 2
+    # merge candidate A: IoU_B = 1.0 against anchor overlap
+    s1[20:30, 25:30] = 3
+    # merge candidate B: tiny overlap -> IoU_B <= 0.1 (must not be picked)
+    s1[29:39, 30:40] = 4
+
+    tracks = build_association_tracks([s0, s1], link_iou=0.0, link_dist=20.0, max_gap=2, merge_dist=20.0)
+    assert len(tracks) == 1
+    assert len(tracks[0].nodes) == 2
+    # merged with only the best IoU_B candidate (id=3), recovering full 10x10 anchor footprint
+    assert tracks[0].nodes[-1].area == 100
+
+
+def test_merge_requires_higher_iou_b_threshold_and_distance_gate():
+    s0 = np.zeros((80, 80), dtype=np.int32)
+    s1 = np.zeros((80, 80), dtype=np.int32)
+
+    s0[20:30, 20:30] = 1
+    s1[20:30, 20:26] = 2
+    # overlap with anchor is only 10x2 => IoU_B = 20/100 = 0.2, not strictly above threshold
+    s1[20:30, 26:36] = 3
+
+    tracks = build_association_tracks([s0, s1], link_iou=0.0, link_dist=18.0, max_gap=2, merge_dist=24.0)
+    # no merge should happen at equality to threshold (must be strictly > 0.2)
+    assert len(tracks) == 2
+    assert sorted(len(t.nodes) for t in tracks) == [1, 2]
+
+
+def test_merge_rejects_far_candidate_even_with_high_iou_b():
+    s0 = np.zeros((120, 120), dtype=np.int32)
+    s1 = np.zeros((120, 120), dtype=np.int32)
+
+    s0[20:30, 20:30] = 1
+    s1[20:30, 20:30] = 2
+    # perfect IoU_B against previous anchor but placed far from base node centroid
+    s1[50:60, 50:60] = 3
+
+    tracks = build_association_tracks([s0, s1], link_iou=0.0, link_dist=8.0, max_gap=2, merge_dist=40.0)
+    # merge distance gate should block this merge; far node becomes separate track
+    assert len(tracks) == 2
+    assert sorted(len(t.nodes) for t in tracks) == [1, 2]
 
 def test_training_loader_accepts_seg_npy(monkeypatch):
     fake_dir = "/data"
