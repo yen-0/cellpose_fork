@@ -227,6 +227,27 @@ def _best_anchor_metrics(track: Track, node: InstanceNode, max_gap: int, depth: 
     return best
 
 
+
+
+def _has_attachable_graph_for_node(node: InstanceNode,
+                                  active_tracks: List[Track],
+                                  max_gap: int,
+                                  link_dist: float,
+                                  exclude_track_id: Optional[int] = None) -> bool:
+    """Return True if `node` can still be attached to another existing track."""
+    for tr in active_tracks:
+        if exclude_track_id is not None and tr.track_id == exclude_track_id:
+            continue
+        anchor_metrics = _best_anchor_metrics(tr, node, max_gap=max_gap, depth=3)
+        if anchor_metrics is None:
+            continue
+        _, gap, inter, _, _, dist = anchor_metrics
+        dist_gate = link_dist * (1.0 + min(1.0, 0.5 * (gap - 1)))
+        radius_gate = 2.0 * float(max(1, node.area))
+        if inter > 0 or dist <= max(dist_gate, radius_gate):
+            return True
+    return False
+
 def _gpu_prefilter_candidates(active, current_nodes, link_dist, size_tolerance):
     try:
         import torch
@@ -315,8 +336,16 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                         n2 = current_nodes[j]
                         if np.linalg.norm(n2.centroid - node.centroid) <= merge_dist:
                             _, n2_iou_b = _node_overlap_scores(anchor, n2)
-                            # If IoU_B is high enough, merge with the single best IoU_B candidate.
-                            if n2_iou_b > 0.1 and n2_iou_b > best_merge_iou_b:
+                            # Merge only as fallback: if this mask cannot attach to any other graph.
+                            can_attach_elsewhere = _has_attachable_graph_for_node(
+                                n2,
+                                active,
+                                max_gap=max_gap,
+                                link_dist=link_dist,
+                                exclude_track_id=tr.track_id,
+                            )
+                            # If IoU_B is high enough and no other graph can take it, merge the best IoU_B candidate.
+                            if (not can_attach_elsewhere) and n2_iou_b > 0.1 and n2_iou_b > best_merge_iou_b:
                                 best_merge_iou_b = n2_iou_b
                                 best_merge_j = j
                                 best_merge_node = n2

@@ -219,6 +219,28 @@ def test_history_anchor_can_beat_last_node_for_reappearance():
 
 
 
+
+
+def test_merge_deferred_when_other_graph_can_attach_candidate():
+    s0 = np.zeros((80, 80), dtype=np.int32)
+    s1 = np.zeros((80, 80), dtype=np.int32)
+
+    # two existing graphs on previous slice
+    s0[20:30, 20:30] = 1
+    s0[20:30, 35:45] = 2
+
+    # candidate chosen by graph 1
+    s1[20:30, 20:30] = 3
+    # high-IoU_B candidate for graph 1, but also a strong direct attach for graph 2
+    s1[20:30, 35:45] = 4
+
+    tracks = build_association_tracks([s0, s1], link_iou=0.0, link_dist=20.0, max_gap=2, merge_dist=25.0)
+
+    # both graphs should attach separately; candidate 4 should not be merged into graph 1
+    assert len(tracks) == 2
+    assert all(len(t.nodes) == 2 for t in tracks)
+    assert sorted(t.nodes[-1].area for t in tracks) == [100, 100]
+
 def test_merge_chooses_single_highest_iou_b_above_threshold():
     s0 = np.zeros((64, 64), dtype=np.int32)
     s1 = np.zeros((64, 64), dtype=np.int32)
