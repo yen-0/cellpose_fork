@@ -91,7 +91,7 @@ Inference-specific:
 - `--semi3d_min_track_len`, `--semi3d_min_conf`, `--semi3d_save_3d_labels`
 - `--semi3d_refiner_model`, `--semi3d_refiner_threshold`
 - `--semi3d_use_prob_occupancy`, `--semi3d_prob_occupancy_thresh`
-- stage1 probability de-fog knobs: `--semi3d_disable_stage1_prob_defog`, `--semi3d_stage1_prob_bg_sigma`, `--semi3d_stage1_prob_bg_percentile`, `--semi3d_stage1_prob_hi_percentile`, `--semi3d_stage1_prob_gamma`
+- stage1 candidate/defog knobs: `--semi3d_stage1_cellprob_threshold`, `--semi3d_disable_stage1_prob_defog`, `--semi3d_stage1_prob_bg_sigma`, `--semi3d_stage1_prob_bg_percentile`, `--semi3d_stage1_prob_hi_percentile`, `--semi3d_stage1_prob_gamma`
 
 Training-specific:
 - `--semi3d_simulate_z_dropout`, `--semi3d_dropout_prob`
@@ -195,6 +195,7 @@ cellpose --semi3d_stage1 \
   --semi3d_input /path/to/stack.tif \
   --semi3d_output /path/to/out \
   --semi3d_pretrained_model cpsam \
+  --semi3d_stage1_cellprob_threshold -2.0 \
   --semi3d_stage1_prob_bg_sigma 40 --semi3d_stage1_prob_bg_percentile 5 --semi3d_stage1_prob_hi_percentile 97 --semi3d_stage1_prob_gamma 0.9 \
   --use_gpu --verbose
 ```

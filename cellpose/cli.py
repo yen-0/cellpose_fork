@@ -319,6 +319,8 @@ def get_arg_parser():
                              help="gamma after stage1 fog-field subtraction and percentile normalization")
     semi3d_args.add_argument("--semi3d_stage1_prob_bg_sigma", default=40.0, type=float,
                              help="gaussian sigma (pixels) for spatial fog-field estimation in stage1")
+    semi3d_args.add_argument("--semi3d_stage1_cellprob_threshold", default=-2.0, type=float,
+                             help="cellprob threshold for stage1 2D Cellpose eval (lower => keep more candidate structures)")
     semi3d_args.add_argument("--semi3d_refiner_threshold", default=0.5, type=float,
                              help="keep threshold for trained semi3d refiner probability")
     semi3d_args.add_argument("--semi3d_simulate_z_dropout", action="store_true",

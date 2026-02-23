@@ -119,7 +119,7 @@ def _run_stage1(args):
 
     LOGGER.info("[semi3d:stage1] starting per-slice inference (%d slices)", stack.shape[0])
     for z in range(stack.shape[0]):
-        masks, flows, *_ = model.eval(stack[z], do_3D=False, diameter=args.diameter)
+        masks, flows, *_ = model.eval(stack[z], do_3D=False, diameter=args.diameter, cellprob_threshold=getattr(args, "stage1_cellprob_threshold", 0.0))
         masks = _remove_border_instances(masks.astype(np.int32), args.border_exclusion_px)
         per_slice_masks.append(masks)
         flow_slice, flow_mag, prob_slice = _extract_debug_maps(flows)
@@ -311,6 +311,7 @@ def run_from_cellpose_args(args):
             stage1_prob_hi_percentile=args.semi3d_stage1_prob_hi_percentile,
             stage1_prob_gamma=args.semi3d_stage1_prob_gamma,
             stage1_prob_bg_sigma=args.semi3d_stage1_prob_bg_sigma,
+            stage1_cellprob_threshold=args.semi3d_stage1_cellprob_threshold,
         )
         total, kept = _run_inference(semi_args)
         print(f"semi3d complete: tracks={total}, kept={kept}")
@@ -336,6 +337,7 @@ def run_from_cellpose_args(args):
             stage1_prob_hi_percentile=args.semi3d_stage1_prob_hi_percentile,
             stage1_prob_gamma=args.semi3d_stage1_prob_gamma,
             stage1_prob_bg_sigma=args.semi3d_stage1_prob_bg_sigma,
+            stage1_cellprob_threshold=args.semi3d_stage1_cellprob_threshold,
         )
         path = _run_stage1(semi_args)
         print(f"semi3d stage1 complete: {path}")

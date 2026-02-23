@@ -113,15 +113,7 @@ def interpolate_missing_mask(prev_node, next_node, z_target: int, image_slice: n
     prev_mask = _node_binary_mask(prev_node, image_slice.shape[:2], slice_mask=prev_slice_mask)
     next_mask = _node_binary_mask(next_node, image_slice.shape[:2], slice_mask=next_slice_mask)
     prior = interpolate_mask_prior(prev_mask, next_mask, alpha)
-    refined = refine_mask_with_slice(prior, image_slice, flow_slice=flow_slice)
-
-    raw = _to_gray(image_slice)
-    inside = raw[refined]
-    outside = raw[~refined]
-    if inside.size == 0 or outside.size == 0:
-        evidence = 0.0
-    else:
-        evidence = float((inside.mean() - outside.mean()) / (raw.std() + 1e-6))
+    # No active refinement: use interpolation only as a geometric proposal.
     geom_consistency = 1.0 - min(1.0, np.linalg.norm(prev_node.centroid - next_node.centroid) / 100.0)
-    confidence = float(0.5 * geom_consistency + 0.5 * max(0.0, min(1.0, evidence)))
-    return refined, confidence
+    confidence = float(max(0.0, min(1.0, geom_consistency)))
+    return prior, confidence
