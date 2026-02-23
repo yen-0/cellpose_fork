@@ -4,6 +4,12 @@ import logging
 import numpy as np
 import cv2
 
+try:
+    from tqdm.auto import tqdm
+except Exception:  # pragma: no cover
+    def tqdm(iterable=None, **kwargs):
+        return iterable
+
 
 LOGGER = logging.getLogger(__name__)
 
@@ -301,12 +307,14 @@ def _compute_pairwise_distances(active_tracks: List[Track], nodes: List[Instance
 
 
 def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tolerance=0.6,
-                             max_gap=3, gpu_prefilter=False, merge_dist=12.0, merge_iou_b_min=0.2):
+                             max_gap=3, gpu_prefilter=False, merge_dist=12.0, merge_iou_b_min=0.2,
+                             show_progress=False):
     tracks: List[Track] = []
     active: List[Track] = []
     next_track_id = 1
 
-    for z in range(len(slice_masks)):
+    z_iter = tqdm(range(len(slice_masks)), desc="[semi3d:stage2] linking slices", unit="slice") if show_progress else range(len(slice_masks))
+    for z in z_iter:
         current_nodes = _extract_nodes_for_slice(slice_masks[z], z)
         used = set()
 
