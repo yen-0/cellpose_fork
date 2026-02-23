@@ -3,8 +3,9 @@ import random
 import logging
 from types import SimpleNamespace
 import numpy as np
-from scipy.ndimage import gaussian_filter, label
+from scipy.ndimage import gaussian_filter, label, distance_transform_edt, maximum_filter
 from cellpose import io, models
+from skimage.segmentation import watershed
 from .linking import build_association_tracks
 from .refine import relabel_tracks
 from .training.train import run_training, extract_track_features
@@ -105,16 +106,31 @@ def _defog_probability(prob_slice, bg_percentile=5.0, hi_percentile=97.0, gamma=
         q = np.power(q, float(gamma), dtype=np.float32)
     return q.astype(np.float32)
 
-def _masks_from_probability(prob_slice, threshold=0.35, min_area=20):
+def _masks_from_probability(prob_slice, threshold=0.35, min_area=20, peak_min_dist=7):
     pm = np.asarray(prob_slice, dtype=np.float32)
     if pm.ndim > 2:
         pm = np.squeeze(pm)
+
     fg = pm >= float(threshold)
-    labs, n = label(fg)
+    if not np.any(fg):
+        return np.zeros(pm.shape, dtype=np.int32)
+
+    # Border-aware splitting: distance-transform peaks + watershed inside foreground.
+    dist = distance_transform_edt(fg)
+    local_max = dist == maximum_filter(dist, size=max(3, int(peak_min_dist) * 2 + 1))
+    peak_mask = np.logical_and(local_max, dist > 1.0)
+    markers, _ = label(peak_mask)
+    if np.max(markers) == 0:
+        markers, _ = label(fg)
+
+    labels_ws = watershed(-dist, markers=markers, mask=fg)
+
     out = np.zeros(pm.shape, dtype=np.int32)
     next_id = 1
-    for i in range(1, n + 1):
-        comp = labs == i
+    for inst_id in np.unique(labels_ws):
+        if inst_id <= 0:
+            continue
+        comp = labels_ws == inst_id
         if comp.sum() < int(min_area):
             continue
         out[comp] = next_id
@@ -155,6 +171,7 @@ def _run_stage1(args):
                 prob_slice,
                 threshold=getattr(args, "stage1_mask_prob_threshold", 0.35),
                 min_area=getattr(args, "stage1_mask_min_area", 20),
+                peak_min_dist=getattr(args, "stage1_mask_peak_min_dist", 7),
             )
         else:
             masks = masks_raw.astype(np.int32)
@@ -343,6 +360,7 @@ def run_from_cellpose_args(args):
             stage1_masks_from_defog_prob=args.semi3d_stage1_masks_from_defog_prob,
             stage1_mask_prob_threshold=args.semi3d_stage1_mask_prob_threshold,
             stage1_mask_min_area=args.semi3d_stage1_mask_min_area,
+            stage1_mask_peak_min_dist=args.semi3d_stage1_mask_peak_min_dist,
         )
         total, kept = _run_inference(semi_args)
         print(f"semi3d complete: tracks={total}, kept={kept}")
@@ -372,6 +390,7 @@ def run_from_cellpose_args(args):
             stage1_masks_from_defog_prob=args.semi3d_stage1_masks_from_defog_prob,
             stage1_mask_prob_threshold=args.semi3d_stage1_mask_prob_threshold,
             stage1_mask_min_area=args.semi3d_stage1_mask_min_area,
+            stage1_mask_peak_min_dist=args.semi3d_stage1_mask_peak_min_dist,
         )
         path = _run_stage1(semi_args)
         print(f"semi3d stage1 complete: {path}")

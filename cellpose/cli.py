@@ -327,6 +327,8 @@ def get_arg_parser():
                              help="threshold on de-fogged stage1 probability map when creating masks from probability")
     semi3d_args.add_argument("--semi3d_stage1_mask_min_area", default=20, type=int,
                              help="minimum connected-component area kept when building stage1 masks from probability")
+    semi3d_args.add_argument("--semi3d_stage1_mask_peak_min_dist", default=7, type=int,
+                             help="minimum peak spacing (pixels) for watershed splitting of defog-prob masks")
     semi3d_args.add_argument("--semi3d_refiner_threshold", default=0.5, type=float,
                              help="keep threshold for trained semi3d refiner probability")
     semi3d_args.add_argument("--semi3d_simulate_z_dropout", action="store_true",
