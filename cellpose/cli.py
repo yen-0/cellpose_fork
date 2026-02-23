@@ -305,7 +305,7 @@ def get_arg_parser():
                              help="number of worker threads for stage2 link candidate scoring")
     semi3d_args.add_argument("--semi3d_merge_dist", default=12.0, type=float,
                              help="max centroid distance to merge split detections within a slice")
-    semi3d_args.add_argument("--semi3d_force_attach_min_area", default=25, type=int,
+    semi3d_args.add_argument("--semi3d_force_attach_min_area", default=8, type=int,
                              help="for leftover nodes with at least this area, force-attach to nearest viable track")
     semi3d_args.add_argument("--semi3d_disable_anchor_first_slice", action="store_true",
                              help="allow creating new tracks after z=0 instead of anchoring all tracks to first slice")

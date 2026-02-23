@@ -146,7 +146,7 @@ Useful flags:
 - `--semi3d_link_workers` (parallel thread workers for link candidate scoring)
 - `--semi3d_link_gpu_prefilter` (GPU proposal of local (neighbor-only) top-K pair candidates before exact scoring/assignment)
 - `--semi3d_merge_dist` (merge split detections of the same cell within a slice)
-- `--semi3d_force_attach_min_area` (force-attach leftover cells above this area to nearest viable track)
+- `--semi3d_force_attach_min_area` (force-attach leftover cells above this area to nearest track (soft area check))
 - `--semi3d_disable_anchor_first_slice` (by default tracks are anchored to z=0; set this to allow new tracks later)
 - `--semi3d_border_exclusion_px`
 - `--semi3d_fill_edges` (fills first/last slices too)

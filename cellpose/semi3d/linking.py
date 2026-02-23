@@ -260,7 +260,7 @@ def _compact_track_history(active: List[Track], keep_recent: int = 2):
 
 def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tolerance=0.6,
                              max_gap=3, gpu_prefilter=False, merge_dist=12.0, link_workers=1,
-                             return_debug=False, force_attach_min_area=25, anchor_first_slice=True):
+                             return_debug=False, force_attach_min_area=8, anchor_first_slice=True):
     tracks: List[Track] = []
     active: List[Track] = []
     next_track_id = 1
@@ -352,6 +352,7 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                 best_score_by_node[idx] = float(sc)
 
         claimed_tracks = set()
+        assigned_track_ai = {}
         for score, ai, idx, iou, gap in all_edges:
             if ai in claimed_tracks or idx in used:
                 continue
@@ -374,14 +375,16 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                     best_candidate = None
                     best_err = cur_area_err
                     best_iou = cur_iou
-                    for j in candidate_idx:
+                    split_candidates = _query_neighbors(cur_node, grid, cs)
+                    split_candidates = list(dict.fromkeys(candidate_idx + split_candidates))
+                    for j in split_candidates:
                         if j in used or j == idx or j in merged_idx:
                             continue
                         n2 = current_nodes[j]
                         if n2.z != cur_node.z:
                             continue
                         dist2 = np.linalg.norm(n2.centroid - cur_node.centroid)
-                        if dist2 > (merge_dist * 1.8):
+                        if dist2 > (merge_dist * 2.2):
                             continue
                         test = _merge_nodes([cur_node, n2])
                         test_iou = _node_iou(last, test)
@@ -412,6 +415,7 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
             for j in merged_idx:
                 used.add(j)
             claimed_tracks.add(ai)
+            assigned_track_ai[ai] = idx
 
             node_debug[idx].update({
                 "track_id": int(tr.track_id),
@@ -427,44 +431,61 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                     "score": float(score),
                 })
 
-        # Force-attach reasonably large leftover nodes to nearest viable unclaimed track.
+        # Force-attach leftover nodes: prioritize nearest track continuity.
         leftover = [i for i, n in enumerate(current_nodes) if i not in used and n.area >= force_attach_min_area]
         for idx in sorted(leftover, key=lambda j: current_nodes[j].area, reverse=True):
             node = current_nodes[idx]
             best = None
             best_score = -1e9
             for ai, tr in enumerate(active):
-                if ai in claimed_tracks:
-                    continue
                 last = tr.nodes[-1]
                 gap = node.z - last.z
+                # if track already linked at this z, allow merge-in rather than append
+                if gap == 0 and ai in assigned_track_ai:
+                    dist = np.linalg.norm(node.centroid - last.centroid)
+                    if dist > (merge_dist * 2.5):
+                        continue
+                    score = -0.004 * dist
+                    if score > best_score:
+                        best_score = score
+                        best = (ai, tr, 0)
+                    continue
+
+                if ai in claimed_tracks:
+                    continue
                 if gap < 1 or gap > max_gap:
                     continue
                 dist = np.linalg.norm(node.centroid - last.centroid)
-                if dist > (link_dist * 2.2):
+                if dist > (link_dist * 2.8):
                     continue
                 area_ratio = min(last.area, node.area) / max(last.area, node.area)
-                score = 0.30 * area_ratio - 0.004 * dist - 0.02 * (gap - 1)
+                score = 0.20 * area_ratio - 0.004 * dist - 0.015 * (gap - 1)
                 if score > best_score:
                     best_score = score
                     best = (ai, tr, gap)
             if best is not None:
                 ai, tr, gap = best
                 last = tr.nodes[-1]
-                iou = _node_iou(last, node)
-                last.compact()
-                tr.nodes.append(node)
-                tr.links.append(iou)
-                skips = max(0, gap - 1)
-                tr.gap_bridges += skips
-                if skips > 0:
-                    tr.gap_hist[skips] = tr.gap_hist.get(skips, 0) + 1
+                if gap == 0:
+                    merged = _merge_nodes([last, node])
+                    tr.nodes[-1] = merged
+                    tr.links[-1] = _node_iou(tr.nodes[-2], merged) if len(tr.nodes) > 1 else tr.links[-1]
+                else:
+                    iou = _node_iou(last, node)
+                    last.compact()
+                    tr.nodes.append(node)
+                    tr.links.append(iou)
+                    skips = max(0, gap - 1)
+                    tr.gap_bridges += skips
+                    if skips > 0:
+                        tr.gap_hist[skips] = tr.gap_hist.get(skips, 0) + 1
+                    claimed_tracks.add(ai)
+                    assigned_track_ai[ai] = idx
                 used.add(idx)
-                claimed_tracks.add(ai)
                 node_debug[idx].update({
                     "track_id": int(tr.track_id),
                     "status": "forced_attach",
-                    "reason": "large_leftover_attached_to_nearest_track",
+                    "reason": "leftover_attached_to_nearest_track",
                     "score": float(best_score),
                 })
 

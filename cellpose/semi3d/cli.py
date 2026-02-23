@@ -224,7 +224,7 @@ def _save_link_debug_overlay(per_slice_masks, debug_records, output_dir):
         "new_track": 3,
         "omitted_by_higher_score_or_track_claim": 4,
         "no_valid_link_started_new_track": 5,
-        "large_leftover_attached_to_nearest_track": 6,
+        "leftover_attached_to_nearest_track": 6,
         "initialized_from_first_slice": 7,
         "omitted_unmatched_to_first_slice": 8,
         "omitted_small_unmatched": 9,
@@ -266,7 +266,7 @@ def _save_link_debug_overlay(per_slice_masks, debug_records, output_dir):
                     reason_val = code_map["new_track"]
             elif status == "forced_attach":
                 color = np.array([0, 255, 255], dtype=np.uint8)
-                reason_val = code_map["large_leftover_attached_to_nearest_track"]
+                reason_val = code_map["leftover_attached_to_nearest_track"]
             elif status == "anchor":
                 color = np.array([120, 255, 120], dtype=np.uint8)
                 reason_val = code_map["initialized_from_first_slice"]
@@ -331,7 +331,7 @@ def _run_stage2(args):
         merge_dist=args.merge_dist,
         link_workers=args.link_workers,
         return_debug=getattr(args, "save_link_debug", False),
-        force_attach_min_area=getattr(args, "force_attach_min_area", 25),
+        force_attach_min_area=getattr(args, "force_attach_min_area", 8),
         anchor_first_slice=getattr(args, "anchor_first_slice", True),
     )
     if getattr(args, "save_link_debug", False):
