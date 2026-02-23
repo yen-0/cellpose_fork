@@ -321,6 +321,12 @@ def get_arg_parser():
                              help="gaussian sigma (pixels) for spatial fog-field estimation in stage1")
     semi3d_args.add_argument("--semi3d_stage1_cellprob_threshold", default=-2.0, type=float,
                              help="cellprob threshold for stage1 2D Cellpose eval (lower => keep more candidate structures)")
+    semi3d_args.add_argument("--semi3d_stage1_masks_from_defog_prob", action="store_true",
+                             help="build stage1 masks from de-fogged probability map components instead of raw cellpose masks")
+    semi3d_args.add_argument("--semi3d_stage1_mask_prob_threshold", default=0.35, type=float,
+                             help="threshold on de-fogged stage1 probability map when creating masks from probability")
+    semi3d_args.add_argument("--semi3d_stage1_mask_min_area", default=20, type=int,
+                             help="minimum connected-component area kept when building stage1 masks from probability")
     semi3d_args.add_argument("--semi3d_refiner_threshold", default=0.5, type=float,
                              help="keep threshold for trained semi3d refiner probability")
     semi3d_args.add_argument("--semi3d_simulate_z_dropout", action="store_true",
