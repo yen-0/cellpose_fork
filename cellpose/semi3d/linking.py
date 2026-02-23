@@ -161,6 +161,41 @@ def _node_raw_iou(node_a: InstanceNode, node_b: InstanceNode,
 def _distance_gate_from_area(area: int, link_dist: float, scale: float = 2.0) -> float:
     """Area-aware distance gate that grows sub-linearly with object size."""
     return max(float(link_dist), scale * np.sqrt(float(max(1, area))))
+
+
+def _node_raw_intersection(node_a: InstanceNode, node_b: InstanceNode,
+                           slice_mask_a: Optional[np.ndarray] = None,
+                           slice_mask_b: Optional[np.ndarray] = None) -> int:
+    ay0, ay1, ax0, ax1 = node_a.bbox
+    by0, by1, bx0, bx1 = node_b.bbox
+    y0, y1 = min(ay0, by0), max(ay1, by1)
+    x0, x1 = min(ax0, bx0), max(ax1, bx1)
+
+    a_crop = _node_mask_crop(node_a, slice_mask_a)
+    b_crop = _node_mask_crop(node_b, slice_mask_b)
+
+    a_full = np.zeros((y1 - y0, x1 - x0), dtype=bool)
+    b_full = np.zeros((y1 - y0, x1 - x0), dtype=bool)
+    a_full[ay0 - y0:ay1 - y0, ax0 - x0:ax1 - x0] = a_crop
+    b_full[by0 - y0:by1 - y0, bx0 - x0:bx1 - x0] = b_crop
+    return int(np.logical_and(a_full, b_full).sum())
+
+
+def _node_raw_iou_b(node_anchor: InstanceNode, node_candidate: InstanceNode,
+                    slice_mask_anchor: Optional[np.ndarray] = None,
+                    slice_mask_candidate: Optional[np.ndarray] = None) -> float:
+    inter = _node_raw_intersection(node_anchor, node_candidate, slice_mask_anchor, slice_mask_candidate)
+    return float(inter / node_candidate.area) if node_candidate.area > 0 else 0.0
+
+
+def _recompute_track_links(track: Track):
+    links = []
+    if len(track.nodes) >= 2:
+        for prev, cur in zip(track.nodes[:-1], track.nodes[1:]):
+            iou_a, raw_iou_b = _node_overlap_scores(prev, cur)
+            raw_iou = _node_raw_iou(prev, cur)
+            links.append(max(iou_a, raw_iou_b, raw_iou))
+    track.links = links
 def _polygon_similarity(node_a: InstanceNode, node_b: InstanceNode) -> float:
     # contour-based similarity, independent of bbox-overlap hard gate
     if not node_a.contours or not node_b.contours:
@@ -341,7 +376,8 @@ def _compute_pairwise_distances(active_tracks: List[Track], nodes: List[Instance
 
 def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tolerance=0.6,
                              max_gap=3, gpu_prefilter=False, merge_dist=12.0, merge_iou_b_min=0.35,
-                             merge_competition_margin=0.1,
+                             merge_competition_margin=0.1, short_track_merge_len=2,
+                             short_track_merge_iou_b_min=None,
                              show_progress=False):
     tracks: List[Track] = []
     active: List[Track] = []
@@ -582,5 +618,71 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                 active.append(tr)
 
         active = [t for t in active if z - t.nodes[-1].z < max_gap]
+
+    # 5) Post-link short-track merge pass: merge newly-created short tracks into larger tracks
+    # using raw IoU_B (raw pixel intersections) on overlapping z slices.
+    if short_track_merge_iou_b_min is None:
+        short_track_merge_iou_b_min = max(0.12, 0.6 * float(merge_iou_b_min))
+
+    removed_track_ids = set()
+    short_tracks = sorted(
+        [tr for tr in tracks if 0 < len(tr.nodes) <= int(short_track_merge_len)],
+        key=lambda t: (len(t.nodes), t.track_id),
+    )
+
+    for tr in short_tracks:
+        if tr.track_id in removed_track_ids:
+            continue
+        best_target = None
+        best_score = float(short_track_merge_iou_b_min)
+        best_matches = None
+        for target in tracks:
+            if target.track_id == tr.track_id or target.track_id in removed_track_ids:
+                continue
+            if len(target.nodes) <= len(tr.nodes):
+                continue
+            t_by_z = {n.z: (idx, n) for idx, n in enumerate(target.nodes)}
+            matched = []
+            for n in tr.nodes:
+                zn = t_by_z.get(n.z)
+                if zn is None:
+                    continue
+                _, tn = zn
+                iou_b_raw = _node_raw_iou_b(tn, n)
+                inter_raw = _node_raw_intersection(tn, n)
+                if inter_raw <= 0:
+                    continue
+                if iou_b_raw < float(short_track_merge_iou_b_min):
+                    continue
+                matched.append((n.z, iou_b_raw, inter_raw))
+            if not matched:
+                continue
+            score = float(np.mean([m[1] for m in matched])) + 0.01 * len(matched)
+            if score > best_score:
+                best_score = score
+                best_target = target
+                best_matches = {zv for zv, _, _ in matched}
+
+        if best_target is None or not best_matches:
+            continue
+
+        merged_any = False
+        target_by_z = {n.z: idx for idx, n in enumerate(best_target.nodes)}
+        for n in tr.nodes:
+            if n.z not in best_matches:
+                continue
+            idx = target_by_z.get(n.z)
+            if idx is None:
+                continue
+            best_target.nodes[idx] = _merge_nodes([best_target.nodes[idx], n])
+            merged_any = True
+
+        if merged_any:
+            best_target.nodes.sort(key=lambda n: n.z)
+            _recompute_track_links(best_target)
+            removed_track_ids.add(tr.track_id)
+
+    if removed_track_ids:
+        tracks = [tr for tr in tracks if tr.track_id not in removed_track_ids]
 
     return tracks

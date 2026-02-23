@@ -267,6 +267,8 @@ def _run_stage2(args):
         merge_dist=args.merge_dist,
         merge_iou_b_min=args.merge_iou_b_min,
         merge_competition_margin=args.merge_competition_margin,
+        short_track_merge_len=args.short_track_merge_len,
+        short_track_merge_iou_b_min=args.short_track_merge_iou_b_min,
         show_progress=True,
     )
 
@@ -360,6 +362,8 @@ def run_from_cellpose_args(args):
             merge_dist=args.semi3d_merge_dist,
             merge_iou_b_min=args.semi3d_merge_iou_b_min,
             merge_competition_margin=args.semi3d_merge_competition_margin,
+            short_track_merge_len=args.semi3d_short_track_merge_len,
+            short_track_merge_iou_b_min=args.semi3d_short_track_merge_iou_b_min,
             allow_overlap_recon=args.semi3d_allow_overlap_recon,
             recon_min_free_fraction=args.semi3d_recon_min_free_fraction,
             save_debug_tiff=args.semi3d_save_debug_tiff,
@@ -433,6 +437,8 @@ def run_from_cellpose_args(args):
             merge_dist=args.semi3d_merge_dist,
             merge_iou_b_min=args.semi3d_merge_iou_b_min,
             merge_competition_margin=args.semi3d_merge_competition_margin,
+            short_track_merge_len=args.semi3d_short_track_merge_len,
+            short_track_merge_iou_b_min=args.semi3d_short_track_merge_iou_b_min,
             allow_overlap_recon=args.semi3d_allow_overlap_recon,
             recon_min_free_fraction=args.semi3d_recon_min_free_fraction,
             save_debug_tiff=args.semi3d_save_debug_tiff,
