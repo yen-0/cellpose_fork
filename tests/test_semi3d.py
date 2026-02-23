@@ -217,6 +217,27 @@ def test_history_anchor_can_beat_last_node_for_reappearance():
     zs = [n.z for n in t0.nodes]
     assert 2 in zs
 
+
+
+def test_merge_chooses_single_highest_iou_b_above_threshold():
+    s0 = np.zeros((64, 64), dtype=np.int32)
+    s1 = np.zeros((64, 64), dtype=np.int32)
+
+    # anchor mask
+    s0[20:30, 20:30] = 1
+    # selected node candidate
+    s1[20:30, 20:25] = 2
+    # merge candidate A: IoU_B = 1.0 against anchor overlap
+    s1[20:30, 25:30] = 3
+    # merge candidate B: tiny overlap -> IoU_B <= 0.1 (must not be picked)
+    s1[29:39, 30:40] = 4
+
+    tracks = build_association_tracks([s0, s1], link_iou=0.0, link_dist=20.0, max_gap=2, merge_dist=20.0)
+    assert len(tracks) == 1
+    assert len(tracks[0].nodes) == 2
+    # merged with only the best IoU_B candidate (id=3), recovering full 10x10 anchor footprint
+    assert tracks[0].nodes[-1].area == 100
+
 def test_training_loader_accepts_seg_npy(monkeypatch):
     fake_dir = "/data"
 

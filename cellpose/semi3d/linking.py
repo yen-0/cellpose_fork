@@ -305,27 +305,24 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
 
             if best is not None:
                 idx, node, anchor, iou_a, iou_b, gap = best
-                merge_nodes = [node]
                 if gap == 1:
+                    best_merge_j = None
+                    best_merge_iou_b = -1.0
+                    best_merge_node = None
                     for j in candidate_idx:
                         if j in used or j == idx:
                             continue
                         n2 = current_nodes[j]
                         if np.linalg.norm(n2.centroid - node.centroid) <= merge_dist:
-                            test = _merge_nodes([node, n2])
-                            n2_inter = _node_intersection(anchor, n2)
-                            n2_dist = float(np.linalg.norm(n2.centroid - node.centroid))
-                            n2_merge_radius = 2.0 * float(max(1, n2.area))
                             _, n2_iou_b = _node_overlap_scores(anchor, n2)
-                            _, merged_iou_b = _node_overlap_scores(anchor, test)
-                            # Merge decision uses ONLY IoU B evidence (candidate-denominator overlap).
-                            if (n2_inter > 0 or n2_dist <= n2_merge_radius) and merged_iou_b >= iou_b:
-                                merge_nodes.append(n2)
-                                used.add(j)
-                                node = test
-                                iou_b = merged_iou_b
-                    if len(merge_nodes) > 1:
-                        node = _merge_nodes(merge_nodes)
+                            # If IoU_B is high enough, merge with the single best IoU_B candidate.
+                            if n2_iou_b > 0.1 and n2_iou_b > best_merge_iou_b:
+                                best_merge_iou_b = n2_iou_b
+                                best_merge_j = j
+                                best_merge_node = n2
+                    if best_merge_node is not None:
+                        node = _merge_nodes([node, best_merge_node])
+                        used.add(best_merge_j)
                         iou_a, iou_b = _node_overlap_scores(anchor, node)
 
                 tr.nodes.append(node)
