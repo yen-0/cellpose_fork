@@ -21,6 +21,22 @@ def test_first_slice_masks_are_never_dropped():
     starts = sorted([tr.nodes[0].instance_id for tr in tracks[:3]])
     assert starts == [1, 2, 3]
 
+
+
+def test_relabel_keeps_first_slice_tracks_even_below_thresholds():
+    from cellpose.semi3d.linking import Track, InstanceNode
+    from cellpose.semi3d.refine import relabel_tracks
+
+    shape = (16, 16)
+    m0 = np.zeros(shape, dtype=bool); m0[3:7, 3:7] = True
+    n0 = InstanceNode(z=0, instance_id=1, bbox=(3,7,3,7), centroid=np.array([4.5,4.5]), area=int(m0.sum()), mask_crop=m0[3:7,3:7])
+    t0 = Track(track_id=1, nodes=[n0], links=[])
+
+    img = np.stack([np.zeros(shape, dtype=np.float32)], axis=0)
+    out, _, _, kept = relabel_tracks([t0], img, min_track_len=3, min_conf=0.99)
+
+    assert len(kept) == 1
+    assert np.any(out[0] > 0)
 def test_gap_tolerant_linking_and_mandatory_reconstruction():
     s0 = np.zeros((32, 32), dtype=np.int32)
     s1 = np.zeros((32, 32), dtype=np.int32)
