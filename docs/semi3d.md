@@ -146,6 +146,7 @@ Useful flags:
 - `--semi3d_link_workers` (parallel thread workers for link candidate scoring)
 - `--semi3d_link_gpu_prefilter` (GPU proposal of local (neighbor-only) top-K pair candidates before exact scoring/assignment)
 - `--semi3d_merge_dist` (merge split detections of the same cell within a slice)
+- `--semi3d_force_attach_min_area` (force-attach leftover cells above this area to nearest viable track)
 - `--semi3d_border_exclusion_px`
 - `--semi3d_fill_edges` (fills first/last slices too)
 - `--semi3d_allow_overlap_recon` (disable occupancy-aware reconstruction blocking)
@@ -163,6 +164,7 @@ Stage2 linking now performs confidence-ordered global assignment with a sparse-c
 ### Filling first and last slices
 
 Use `--semi3d_fill_edges` during `--semi3d` or `--semi3d_stage2` to run boundary reconstruction on first/last slices using nearest valid track masks as priors (with image/flow refinement).
+Fill-edges reconstruction now falls back to the track prior mask when stage1 has no object on boundary slices, reducing first/last-slice dropouts.
 
 
 ### Stage2 launching note
@@ -219,6 +221,7 @@ cellpose --semi3d_stage2 \
   --semi3d_fill_edges \
   --semi3d_use_prob_occupancy --semi3d_prob_occupancy_thresh 0.5 \
   --semi3d_recon_min_free_fraction 0.25 \
+  --semi3d_force_attach_min_area 25 \
   --semi3d_refiner_model /path/to/model_out/semi3d_refiner.npz \
   --semi3d_refiner_threshold 0.5 \
   --semi3d_save_debug_tiff --semi3d_save_link_debug --verbose

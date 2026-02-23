@@ -81,6 +81,29 @@ def test_edge_fill_reconstructs_first_and_last_slices():
     assert np.any(flags[3] > 0)
 
 
+
+
+def test_edge_fill_with_source_masks_falls_back_to_prior():
+    s0 = np.zeros((24, 24), dtype=np.int32)
+    s1 = np.zeros((24, 24), dtype=np.int32)
+    s2 = np.zeros((24, 24), dtype=np.int32)
+    s1[8:12, 8:12] = 1
+
+    tracks = build_association_tracks([s0, s1, s2], link_iou=0.0, link_dist=10.0, max_gap=2)
+    img = np.stack([s.astype(np.float32) for s in [s0, s1, s2]], axis=0)
+    refined, _, flags, kept = relabel_tracks(
+        tracks,
+        img,
+        min_track_len=1,
+        min_conf=0.0,
+        fill_edges=True,
+        source_masks=np.stack([s0, s1, s2], axis=0),
+    )
+    assert len(kept) == 1
+    assert np.any(refined[0] > 0)
+    assert np.any(refined[2] > 0)
+    assert np.any(flags[0] > 0)
+    assert np.any(flags[2] > 0)
 def test_training_loader_accepts_seg_npy(monkeypatch):
     fake_dir = "/data"
 
@@ -131,7 +154,7 @@ def test_main_parser_accepts_stage_flags():
     args = parser.parse_args([
         "--semi3d_stage2", "--semi3d_input", "/tmp/in.tif", "--semi3d_output", "/tmp/out",
         "--semi3d_stage1_masks", "/tmp/semi3d_stage1_masks.tif", "--semi3d_fill_edges",
-        "--semi3d_memmap_stage2_inputs", "--semi3d_stage2_use_gpu", "--semi3d_link_gpu_prefilter", "--semi3d_link_workers", "4", "--semi3d_merge_dist", "10", "--semi3d_recon_min_free_fraction", "0.3", "--semi3d_save_debug_tiff", "--semi3d_save_link_debug", "--semi3d_use_prob_occupancy", "--semi3d_prob_occupancy_thresh", "0.55", "--semi3d_stage1_prob_bg_percentile", "30", "--semi3d_stage1_prob_hi_percentile", "98", "--semi3d_stage1_prob_gamma", "1.1", "--semi3d_stage1_prob_bg_sigma", "42", "--semi3d_stage1_cellprob_threshold", "-2.5", "--semi3d_stage1_prob_boundary_sigma", "1.8", "--semi3d_stage1_prob_boundary_strength", "0.45", "--semi3d_refiner_batch_size", "32"
+        "--semi3d_memmap_stage2_inputs", "--semi3d_stage2_use_gpu", "--semi3d_link_gpu_prefilter", "--semi3d_link_workers", "4", "--semi3d_merge_dist", "10", "--semi3d_force_attach_min_area", "20", "--semi3d_recon_min_free_fraction", "0.3", "--semi3d_save_debug_tiff", "--semi3d_save_link_debug", "--semi3d_use_prob_occupancy", "--semi3d_prob_occupancy_thresh", "0.55", "--semi3d_stage1_prob_bg_percentile", "30", "--semi3d_stage1_prob_hi_percentile", "98", "--semi3d_stage1_prob_gamma", "1.1", "--semi3d_stage1_prob_bg_sigma", "42", "--semi3d_stage1_cellprob_threshold", "-2.5", "--semi3d_stage1_prob_boundary_sigma", "1.8", "--semi3d_stage1_prob_boundary_strength", "0.45", "--semi3d_refiner_batch_size", "32"
     ])
     assert args.semi3d_stage2 is True
     assert args.semi3d_fill_edges is True
@@ -140,6 +163,7 @@ def test_main_parser_accepts_stage_flags():
     assert args.semi3d_link_gpu_prefilter is True
     assert args.semi3d_link_workers == 4
     assert abs(args.semi3d_merge_dist - 10.0) < 1e-6
+    assert args.semi3d_force_attach_min_area == 20
     assert abs(args.semi3d_recon_min_free_fraction - 0.3) < 1e-6
     assert args.semi3d_save_debug_tiff is True
     assert args.semi3d_save_link_debug is True

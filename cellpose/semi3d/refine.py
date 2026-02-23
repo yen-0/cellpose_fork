@@ -115,19 +115,22 @@ def relabel_tracks(tracks, image_stack, flow_stack=None, min_track_len=2, min_co
 
     for tr, _ in kept:
         tid = track_to_tid[id(tr)]
-        for z, m_pred, _, _ in recover_track_gaps(tr, image_stack, flow_stack=flow_stack, fill_edges=fill_edges, source_masks=source_masks):
+        for z, m_pred, _, is_edge_fill in recover_track_gaps(tr, image_stack, flow_stack=flow_stack, fill_edges=fill_edges, source_masks=source_masks):
             if m_pred is None or not np.any(m_pred):
                 continue
-            if source_masks is None:
-                continue
-
             free = out[z] == 0
             not_locked = np.logical_not(locked_direct[z])
             occ = np.logical_and(free, not_locked)
             if prob_stack is not None:
                 occ = np.logical_and(occ, prob_stack[z] < prob_occupancy_thresh)
 
-            chosen, _ = _select_best_unoccupied_structure(m_pred, source_masks[z], occupied_mask=np.logical_not(occ))
+            # For edge-fill slices, if stage1 has no suitable structure, keep prior mask instead of dropping it.
+            if source_masks is None:
+                chosen = m_pred
+            else:
+                chosen, _ = _select_best_unoccupied_structure(m_pred, source_masks[z], occupied_mask=np.logical_not(occ))
+                if chosen is None and is_edge_fill:
+                    chosen = m_pred
             if chosen is None:
                 continue
 

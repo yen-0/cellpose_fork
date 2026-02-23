@@ -224,6 +224,7 @@ def _save_link_debug_overlay(per_slice_masks, debug_records, output_dir):
         "new_track": 3,
         "omitted_by_higher_score_or_track_claim": 4,
         "no_valid_link_started_new_track": 5,
+        "large_leftover_attached_to_nearest_track": 6,
     }
     overlays = []
     reason_stack = []
@@ -260,6 +261,9 @@ def _save_link_debug_overlay(per_slice_masks, debug_records, output_dir):
                 else:
                     color = np.array([200, 0, 200], dtype=np.uint8)
                     reason_val = code_map["new_track"]
+            elif status == "forced_attach":
+                color = np.array([0, 255, 255], dtype=np.uint8)
+                reason_val = code_map["large_leftover_attached_to_nearest_track"]
             else:
                 color = np.array([100, 100, 255], dtype=np.uint8)
                 reason_val = code_map["no_valid_link_started_new_track"]
@@ -314,6 +318,7 @@ def _run_stage2(args):
         merge_dist=args.merge_dist,
         link_workers=args.link_workers,
         return_debug=getattr(args, "save_link_debug", False),
+        force_attach_min_area=getattr(args, "force_attach_min_area", 25),
     )
     if getattr(args, "save_link_debug", False):
         tracks, link_debug = link_out
@@ -406,6 +411,7 @@ def run_from_cellpose_args(args):
             link_gpu_prefilter=args.semi3d_link_gpu_prefilter,
             merge_dist=args.semi3d_merge_dist,
             link_workers=args.semi3d_link_workers,
+            force_attach_min_area=args.semi3d_force_attach_min_area,
             allow_overlap_recon=args.semi3d_allow_overlap_recon,
             recon_min_free_fraction=args.semi3d_recon_min_free_fraction,
             save_debug_tiff=args.semi3d_save_debug_tiff,
@@ -480,6 +486,7 @@ def run_from_cellpose_args(args):
             link_gpu_prefilter=args.semi3d_link_gpu_prefilter,
             merge_dist=args.semi3d_merge_dist,
             link_workers=args.semi3d_link_workers,
+            force_attach_min_area=args.semi3d_force_attach_min_area,
             allow_overlap_recon=args.semi3d_allow_overlap_recon,
             recon_min_free_fraction=args.semi3d_recon_min_free_fraction,
             save_debug_tiff=args.semi3d_save_debug_tiff,

@@ -207,7 +207,6 @@ def _collect_track_candidates(ai, tr, z, current_nodes, used, candidate_idx, lin
     if z - last.z > max_gap:
         return []
 
-    # sparse fallback: if only one structure remains plausible in vicinity, allow weak overlap.
     sparse_pool = len(candidate_idx) <= 1
     edges = []
     for i in candidate_idx:
@@ -219,25 +218,28 @@ def _collect_track_candidates(ai, tr, z, current_nodes, used, candidate_idx, lin
             continue
 
         dist = np.linalg.norm(node.centroid - last.centroid)
-        dyn_dist = link_dist * (1.0 + min(1.0, 0.3 * (gap - 1)))
+        dyn_dist = link_dist * (1.0 + min(1.1, 0.35 * (gap - 1)))
         if dist > dyn_dist:
             continue
 
         area_ratio = min(last.area, node.area) / max(last.area, node.area)
-        area_floor = size_tolerance * (1.0 - min(0.35, 0.10 * (gap - 1)))
+        area_floor = size_tolerance * 0.70 * (1.0 - min(0.40, 0.12 * (gap - 1)))
         if sparse_pool:
-            area_floor *= 0.55
+            area_floor *= 0.50
+        # prevent pathological large->tiny assignment except in sparse fallback.
+        if last.area > 2.8 * node.area and not sparse_pool:
+            continue
         if area_ratio < area_floor:
             continue
 
         poly_sim = _polygon_similarity(last, node)
         iou = _node_iou(last, node)
-        weak_link = (iou < (link_iou * 0.45) and gap == 1 and poly_sim < 0.25)
+        weak_link = (iou < (link_iou * 0.35) and gap == 1 and poly_sim < 0.18)
         if weak_link and not sparse_pool:
             continue
 
-        sparse_bonus = 0.12 if sparse_pool and weak_link else 0.0
-        score = iou + 0.45 * area_ratio + 0.15 * poly_sim - 0.01 * dist - 0.02 * (gap - 1) + sparse_bonus
+        sparse_bonus = 0.18 if sparse_pool and weak_link else 0.0
+        score = iou + 0.65 * area_ratio + 0.15 * poly_sim - 0.008 * dist - 0.015 * (gap - 1) + sparse_bonus
         edges.append((score, ai, i, iou, gap))
     return edges
 
@@ -253,7 +255,7 @@ def _compact_track_history(active: List[Track], keep_recent: int = 2):
 
 def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tolerance=0.6,
                              max_gap=3, gpu_prefilter=False, merge_dist=12.0, link_workers=1,
-                             return_debug=False):
+                             return_debug=False, force_attach_min_area=25):
     tracks: List[Track] = []
     active: List[Track] = []
     next_track_id = 1
@@ -335,17 +337,22 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
             merge_nodes = [node]
             merged_idx = []
             if gap == 1:
+                base_ar = min(last.area, node.area) / max(last.area, node.area)
                 for j in candidate_idx:
                     if j in used or j == idx:
                         continue
                     n2 = current_nodes[j]
-                    if np.linalg.norm(n2.centroid - node.centroid) <= merge_dist:
+                    if np.linalg.norm(n2.centroid - node.centroid) <= (merge_dist * 1.4):
                         test = _merge_nodes([node, n2])
                         merged_iou = _node_iou(last, test)
-                        if merged_iou >= iou - 0.03:
+                        merged_ar = min(last.area, test.area) / max(last.area, test.area)
+                        if merged_iou >= iou - 0.05 or merged_ar >= max(base_ar + 0.10, size_tolerance * 0.75):
                             merge_nodes.append(n2)
                             merged_idx.append(j)
                             used.add(j)
+                            node = test
+                            iou = merged_iou
+                            base_ar = merged_ar
                 if len(merge_nodes) > 1:
                     node = _merge_nodes(merge_nodes)
                     iou = _node_iou(last, node)
@@ -372,6 +379,49 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                     "status": "merged",
                     "reason": f"merged_into_node_{idx}",
                     "score": float(score),
+                })
+
+        # Force-attach reasonably large leftover nodes to nearest viable unclaimed track.
+        leftover = [i for i, n in enumerate(current_nodes) if i not in used and n.area >= force_attach_min_area]
+        for idx in sorted(leftover, key=lambda j: current_nodes[j].area, reverse=True):
+            node = current_nodes[idx]
+            best = None
+            best_score = -1e9
+            for ai, tr in enumerate(active):
+                if ai in claimed_tracks:
+                    continue
+                last = tr.nodes[-1]
+                gap = node.z - last.z
+                if gap < 1 or gap > max_gap:
+                    continue
+                dist = np.linalg.norm(node.centroid - last.centroid)
+                if dist > (link_dist * 2.2):
+                    continue
+                area_ratio = min(last.area, node.area) / max(last.area, node.area)
+                if area_ratio < 0.12:
+                    continue
+                score = 0.70 * area_ratio - 0.006 * dist - 0.02 * (gap - 1)
+                if score > best_score:
+                    best_score = score
+                    best = (ai, tr, gap)
+            if best is not None:
+                ai, tr, gap = best
+                last = tr.nodes[-1]
+                iou = _node_iou(last, node)
+                last.compact()
+                tr.nodes.append(node)
+                tr.links.append(iou)
+                skips = max(0, gap - 1)
+                tr.gap_bridges += skips
+                if skips > 0:
+                    tr.gap_hist[skips] = tr.gap_hist.get(skips, 0) + 1
+                used.add(idx)
+                claimed_tracks.add(ai)
+                node_debug[idx].update({
+                    "track_id": int(tr.track_id),
+                    "status": "forced_attach",
+                    "reason": "large_leftover_attached_to_nearest_track",
+                    "score": float(best_score),
                 })
 
         for i, node in enumerate(current_nodes):

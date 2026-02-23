@@ -305,6 +305,8 @@ def get_arg_parser():
                              help="number of worker threads for stage2 link candidate scoring")
     semi3d_args.add_argument("--semi3d_merge_dist", default=12.0, type=float,
                              help="max centroid distance to merge split detections within a slice")
+    semi3d_args.add_argument("--semi3d_force_attach_min_area", default=25, type=int,
+                             help="for leftover nodes with at least this area, force-attach to nearest viable track")
     semi3d_args.add_argument("--semi3d_allow_overlap_recon", action="store_true",
                              help="allow reconstructed masks to overlap already-established masks")
     semi3d_args.add_argument("--semi3d_recon_min_free_fraction", default=0.25, type=float,
