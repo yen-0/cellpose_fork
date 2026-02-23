@@ -33,93 +33,31 @@ def test_two_skip_linking_supported():
 
 
 
-def test_linking_uses_confidence_order_not_active_order():
-    s0 = np.zeros((40, 40), dtype=np.int32)
-    s1 = np.zeros((40, 40), dtype=np.int32)
-
-    # two tracks start in slice 0
-    s0[8:12, 8:12] = 1
-    s0[20:24, 8:12] = 2
-
-    # one candidate in slice 1 is much closer to track 2 than track 1
-    s1[20:24, 8:12] = 3
-
-    tracks = build_association_tracks([s0, s1], link_iou=0.0, link_dist=20.0, max_gap=2)
-    by_start = {tr.nodes[0].instance_id: tr for tr in tracks}
-
-    assert len(by_start[2].nodes) == 2
-    assert len(by_start[1].nodes) == 1
 
 
 
-
-def test_sparse_fallback_allows_low_overlap_link_when_only_candidate_left():
+def test_merge_requires_iou_improvement_only():
     s0 = np.zeros((48, 48), dtype=np.int32)
     s1 = np.zeros((48, 48), dtype=np.int32)
-    s0[10:14, 10:14] = 1
-    # disjoint but nearby candidate in next slice
-    s1[16:20, 10:14] = 2
+    s0[16:24, 16:24] = 1
+    s1[16:24, 16:20] = 2
+    s1[16:24, 20:24] = 3
 
-    tracks = build_association_tracks([s0, s1], link_iou=0.2, link_dist=12.0, max_gap=2, size_tolerance=0.6)
-    assert len(tracks) == 1
-    assert len(tracks[0].nodes) == 2
-
-
-
-def test_split_into_two_components_merges_for_same_track():
-    s0 = np.zeros((40, 40), dtype=np.int32)
-    s1 = np.zeros((40, 40), dtype=np.int32)
-    s0[12:20, 12:20] = 1
-    s1[12:16, 12:20] = 2
-    s1[16:20, 12:20] = 3
-
-    tracks = build_association_tracks([s0, s1], link_iou=0.0, link_dist=20.0, max_gap=2)
+    tracks = build_association_tracks([s0, s1], link_iou=0.0, link_dist=14.0, max_gap=2)
     assert len(tracks) == 1
     assert len(tracks[0].nodes) == 2
     assert tracks[0].nodes[-1].area >= 60
 
-
-
-
-def test_split_into_three_components_merges_for_same_track():
-    s0 = np.zeros((60, 60), dtype=np.int32)
-    s1 = np.zeros((60, 60), dtype=np.int32)
-    s0[20:32, 20:32] = 1
-    s1[20:24, 20:32] = 2
-    s1[24:28, 20:32] = 3
-    s1[28:32, 20:32] = 4
-
-    tracks = build_association_tracks([s0, s1], link_iou=0.0, link_dist=24.0, max_gap=2)
-    assert len(tracks) == 1
-    assert len(tracks[0].nodes) == 2
-    assert tracks[0].nodes[-1].area >= 120
-
-def test_closest_leftover_can_link_without_overlap():
-    s0 = np.zeros((48, 48), dtype=np.int32)
-    s1 = np.zeros((48, 48), dtype=np.int32)
-    s0[10:16, 10:16] = 1
-    s1[18:24, 10:16] = 2  # disjoint but nearest plausible continuation
-
-    tracks = build_association_tracks([s0, s1], link_iou=0.2, link_dist=16.0, max_gap=2)
-    assert len(tracks) == 1
-    assert len(tracks[0].nodes) == 2
-
-
-def test_no_leftovers_when_anchor_mode_enabled():
+def test_forced_link_attaches_leftover_with_tiny_iou():
     s0 = np.zeros((64, 64), dtype=np.int32)
     s1 = np.zeros((64, 64), dtype=np.int32)
-    s0[10:18, 10:18] = 1
-    s0[35:43, 35:43] = 2
-    # three components in next slice (more than anchors)
-    s1[11:16, 10:18] = 3
-    s1[16:19, 10:18] = 4
-    s1[34:44, 35:43] = 5
+    s0[8:14, 8:14] = 1
+    # no-overlap and fairly far, but within 2*link_dist fallback
+    s1[22:28, 8:14] = 2
 
-    tracks, debug = build_association_tracks([s0, s1], link_iou=0.0, link_dist=26.0, max_gap=2, return_debug=True)
-    assert len(tracks) == 2
-    z1 = debug[1]
-    statuses = [n["status"] for n in z1["nodes"]]
-    assert "omitted" not in statuses
+    tracks = build_association_tracks([s0, s1], link_iou=0.5, link_dist=10.0, max_gap=2)
+    assert len(tracks) == 1
+    assert len(tracks[0].nodes) == 2
 
 def test_edge_fill_reconstructs_first_and_last_slices():
     s0 = np.zeros((32, 32), dtype=np.int32)
@@ -138,29 +76,6 @@ def test_edge_fill_reconstructs_first_and_last_slices():
     assert np.any(flags[3] > 0)
 
 
-
-
-def test_edge_fill_with_source_masks_falls_back_to_prior():
-    s0 = np.zeros((24, 24), dtype=np.int32)
-    s1 = np.zeros((24, 24), dtype=np.int32)
-    s2 = np.zeros((24, 24), dtype=np.int32)
-    s1[8:12, 8:12] = 1
-
-    tracks = build_association_tracks([s0, s1, s2], link_iou=0.0, link_dist=10.0, max_gap=2)
-    img = np.stack([s.astype(np.float32) for s in [s0, s1, s2]], axis=0)
-    refined, _, flags, kept = relabel_tracks(
-        tracks,
-        img,
-        min_track_len=1,
-        min_conf=0.0,
-        fill_edges=True,
-        source_masks=np.stack([s0, s1, s2], axis=0),
-    )
-    assert len(kept) == 1
-    assert np.any(refined[0] > 0)
-    assert np.any(refined[2] > 0)
-    assert np.any(flags[0] > 0)
-    assert np.any(flags[2] > 0)
 def test_training_loader_accepts_seg_npy(monkeypatch):
     fake_dir = "/data"
 
@@ -211,20 +126,16 @@ def test_main_parser_accepts_stage_flags():
     args = parser.parse_args([
         "--semi3d_stage2", "--semi3d_input", "/tmp/in.tif", "--semi3d_output", "/tmp/out",
         "--semi3d_stage1_masks", "/tmp/semi3d_stage1_masks.tif", "--semi3d_fill_edges",
-        "--semi3d_memmap_stage2_inputs", "--semi3d_stage2_use_gpu", "--semi3d_disable_anchor_first_slice", "--semi3d_link_gpu_prefilter", "--semi3d_link_workers", "4", "--semi3d_merge_dist", "10", "--semi3d_force_attach_min_area", "20", "--semi3d_recon_min_free_fraction", "0.3", "--semi3d_save_debug_tiff", "--semi3d_save_link_debug", "--semi3d_use_prob_occupancy", "--semi3d_prob_occupancy_thresh", "0.55", "--semi3d_stage1_prob_bg_percentile", "30", "--semi3d_stage1_prob_hi_percentile", "98", "--semi3d_stage1_prob_gamma", "1.1", "--semi3d_stage1_prob_bg_sigma", "42", "--semi3d_stage1_cellprob_threshold", "-2.5", "--semi3d_stage1_prob_boundary_sigma", "1.8", "--semi3d_stage1_prob_boundary_strength", "0.45", "--semi3d_refiner_batch_size", "32"
+        "--semi3d_memmap_stage2_inputs", "--semi3d_stage2_use_gpu", "--semi3d_link_gpu_prefilter", "--semi3d_merge_dist", "10", "--semi3d_recon_min_free_fraction", "0.3", "--semi3d_save_debug_tiff", "--semi3d_use_prob_occupancy", "--semi3d_prob_occupancy_thresh", "0.55", "--semi3d_stage1_prob_bg_percentile", "30", "--semi3d_stage1_prob_hi_percentile", "98", "--semi3d_stage1_prob_gamma", "1.1", "--semi3d_stage1_prob_bg_sigma", "42", "--semi3d_stage1_cellprob_threshold", "-2.5", "--semi3d_stage1_prob_boundary_sigma", "1.8", "--semi3d_stage1_prob_boundary_strength", "0.45", "--semi3d_refiner_batch_size", "32"
     ])
     assert args.semi3d_stage2 is True
     assert args.semi3d_fill_edges is True
     assert args.semi3d_memmap_stage2_inputs is True
     assert args.semi3d_stage2_use_gpu is True
-    assert args.semi3d_disable_anchor_first_slice is True
     assert args.semi3d_link_gpu_prefilter is True
-    assert args.semi3d_link_workers == 4
     assert abs(args.semi3d_merge_dist - 10.0) < 1e-6
-    assert args.semi3d_force_attach_min_area == 20
     assert abs(args.semi3d_recon_min_free_fraction - 0.3) < 1e-6
     assert args.semi3d_save_debug_tiff is True
-    assert args.semi3d_save_link_debug is True
     assert args.semi3d_use_prob_occupancy is True
     assert abs(args.semi3d_prob_occupancy_thresh - 0.55) < 1e-6
     assert abs(args.semi3d_stage1_prob_bg_percentile - 30.0) < 1e-6

@@ -66,10 +66,6 @@ Inference outputs include:
 - `semi3d_refined_masks.tif`: final per-slice labels.
 - `semi3d_track_labels.tif` (optional): z-consistent track labels.
 - `semi3d_reconstructed_flags.tif`: binary map where reconstructed (not directly detected) pixels are marked as 1.
-- `semi3d_link_debug_overlay.tif` (optional): RGB overlay with node->track assignment and short reason text.
-- `semi3d_link_debug_reason_codes.tif` (optional): per-pixel reason code map for link outcomes.
-- `semi3d_link_debug_track_ids.tif` (optional): per-pixel track ID map from linking stage debug.
-- `semi3d_link_debug_records.json` (optional): structured per-slice node/track decision reasons.
 
 Outputs JSON metrics including:
 - Dice / IoU mean (slice-wise)
@@ -143,20 +139,14 @@ Useful flags:
 - `--semi3d_stage1_masks` (preferred TIFF), `--semi3d_stage1_flows`, `--semi3d_stage1_prob`
 - `--semi3d_memmap_stage2_inputs` (memory-map masks in stage2)
 - `--semi3d_stage2_use_gpu` (GPU refiner scoring in stage2)
-- `--semi3d_link_workers` (parallel thread workers for link candidate scoring)
-- `--semi3d_link_gpu_prefilter` (GPU proposal of local (neighbor-only) top-K pair candidates before exact scoring/assignment)
+- `--semi3d_link_gpu_prefilter` (hybrid GPU prefilter for linking)
 - `--semi3d_merge_dist` (merge split detections of the same cell within a slice)
-- `--semi3d_force_attach_min_area` (force-attach leftover cells above this area to nearest track (soft area check))
-- `--semi3d_disable_anchor_first_slice` (by default tracks are anchored to z=0; set this to allow new tracks later)
 - `--semi3d_border_exclusion_px`
 - `--semi3d_fill_edges` (fills first/last slices too)
 - `--semi3d_allow_overlap_recon` (disable occupancy-aware reconstruction blocking)
 - `--semi3d_recon_min_free_fraction` (reject impossible reconstructions that mostly overlap established cells)
 - `--semi3d_use_prob_occupancy`, `--semi3d_prob_occupancy_thresh` (use stage1 probability map as occupancy prior in stage2)
-
-Stage2 linking now performs confidence-ordered global assignment with a sparse-candidate fallback: if only one plausible candidate remains for a track in a slice neighborhood, weak-overlap links can still be retained.
 - `--semi3d_save_debug_tiff` (save debug flow/prob/refiner maps as TIFF)
-- `--semi3d_save_link_debug` (save per-slice link decision overlays + reason maps + JSON records)
 - `--semi3d_max_gap` (supports 2+ skips)
 - `--use_gpu` for accelerated stage1 inference
 - `--semi3d_refiner_linear` to force linear model; nonlinear refiner is default
@@ -165,7 +155,6 @@ Stage2 linking now performs confidence-ordered global assignment with a sparse-c
 ### Filling first and last slices
 
 Use `--semi3d_fill_edges` during `--semi3d` or `--semi3d_stage2` to run boundary reconstruction on first/last slices using nearest valid track masks as priors (with image/flow refinement).
-Fill-edges reconstruction now falls back to the track prior mask when stage1 has no object on boundary slices, reducing first/last-slice dropouts.
 
 
 ### Stage2 launching note
@@ -208,7 +197,7 @@ cellpose --semi3d_stage1 \
   --semi3d_pretrained_model cpsam \
   --semi3d_stage1_cellprob_threshold -2.0 \
   --semi3d_stage1_prob_bg_sigma 50 --semi3d_stage1_prob_bg_percentile 2 --semi3d_stage1_prob_hi_percentile 98 --semi3d_stage1_prob_gamma 0.85 \
-  --semi3d_stage1_prob_boundary_sigma 0.8 --semi3d_stage1_prob_boundary_strength 0.35 \
+  --semi3d_stage1_prob_boundary_sigma 1.2 --semi3d_stage1_prob_boundary_strength 0.35 \
   --use_gpu --verbose
 ```
 
@@ -222,10 +211,9 @@ cellpose --semi3d_stage2 \
   --semi3d_fill_edges \
   --semi3d_use_prob_occupancy --semi3d_prob_occupancy_thresh 0.5 \
   --semi3d_recon_min_free_fraction 0.25 \
-  --semi3d_force_attach_min_area 25 \
   --semi3d_refiner_model /path/to/model_out/semi3d_refiner.npz \
   --semi3d_refiner_threshold 0.5 \
-  --semi3d_save_debug_tiff --semi3d_save_link_debug --verbose
+  --semi3d_save_debug_tiff --verbose
 ```
 
 ### Refiner training (prob-on by default, minibatch)

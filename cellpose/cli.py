@@ -293,22 +293,14 @@ def get_arg_parser():
                              help="save stage1 flow hints for stage2 reconstruction")
     semi3d_args.add_argument("--semi3d_save_debug_tiff", action="store_true",
                              help="save debug maps (flow magnitude / probability / refiner keep prob) as TIFF")
-    semi3d_args.add_argument("--semi3d_save_link_debug", action="store_true",
-                             help="save stage2 link decision overlays and JSON records")
     semi3d_args.add_argument("--semi3d_stage2_use_gpu", action="store_true",
                              help="use GPU acceleration for stage2 refiner scoring when available")
     semi3d_args.add_argument("--semi3d_memmap_stage2_inputs", action="store_true",
                              help="memory-map stage2 input masks when using .npy inputs to reduce RAM usage")
     semi3d_args.add_argument("--semi3d_link_gpu_prefilter", action="store_true",
                              help="use hybrid GPU prefilter (distance/size gating) during stage2 linking")
-    semi3d_args.add_argument("--semi3d_link_workers", default=1, type=int,
-                             help="number of worker threads for stage2 link candidate scoring")
     semi3d_args.add_argument("--semi3d_merge_dist", default=12.0, type=float,
                              help="max centroid distance to merge split detections within a slice")
-    semi3d_args.add_argument("--semi3d_force_attach_min_area", default=8, type=int,
-                             help="for leftover nodes with at least this area, force-attach to nearest viable track")
-    semi3d_args.add_argument("--semi3d_disable_anchor_first_slice", action="store_true",
-                             help="allow creating new tracks after z=0 instead of anchoring all tracks to first slice")
     semi3d_args.add_argument("--semi3d_allow_overlap_recon", action="store_true",
                              help="allow reconstructed masks to overlap already-established masks")
     semi3d_args.add_argument("--semi3d_recon_min_free_fraction", default=0.25, type=float,
@@ -331,7 +323,7 @@ def get_arg_parser():
                              help="cellprob threshold for stage1 2D Cellpose eval (lower => keep more candidate structures)")
     semi3d_args.add_argument("--semi3d_disable_stage1_use_defog_prob_for_cellpose", action="store_true",
                              help="disable feeding de-fogged stage1 probability map back into Cellpose for mask creation")
-    semi3d_args.add_argument("--semi3d_stage1_prob_boundary_sigma", default=0.8, type=float,
+    semi3d_args.add_argument("--semi3d_stage1_prob_boundary_sigma", default=1.2, type=float,
                              help="gaussian smoothing sigma for boundary darkening map in stage1 defog")
     semi3d_args.add_argument("--semi3d_stage1_prob_boundary_strength", default=0.35, type=float,
                              help="strength of boundary darkening after large-scale fog removal in stage1")

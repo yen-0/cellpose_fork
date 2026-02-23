@@ -1,10 +1,8 @@
 import os
 import random
 import logging
-import json
 from types import SimpleNamespace
 import numpy as np
-import cv2
 from scipy.ndimage import gaussian_filter
 from cellpose import io, models
 from .linking import build_association_tracks
@@ -84,7 +82,7 @@ def _extract_debug_maps(flows):
 
 
 def _defog_probability(prob_slice, bg_percentile=2.0, hi_percentile=98.0, gamma=0.85,
-                       bg_sigma=50.0, boundary_sigma=0.8, boundary_strength=0.35):
+                       bg_sigma=50.0, boundary_sigma=1.2, boundary_strength=0.35):
     p = np.asarray(prob_slice, dtype=np.float32)
     if p.ndim > 2:
         p = np.squeeze(p)
@@ -146,7 +144,7 @@ def _run_stage1(args):
                 hi_percentile=getattr(args, "stage1_prob_hi_percentile", 98.0),
                 gamma=getattr(args, "stage1_prob_gamma", 0.85),
                 bg_sigma=getattr(args, "stage1_prob_bg_sigma", 50.0),
-                boundary_sigma=getattr(args, "stage1_prob_boundary_sigma", 0.8),
+                boundary_sigma=getattr(args, "stage1_prob_boundary_sigma", 1.2),
                 boundary_strength=getattr(args, "stage1_prob_boundary_strength", 0.35),
             )
 
@@ -216,93 +214,6 @@ def _predict_keep_prob(refiner, feats, use_gpu=False):
     return refiner.predict_proba(feats)
 
 
-def _save_link_debug_overlay(per_slice_masks, debug_records, output_dir):
-    os.makedirs(output_dir, exist_ok=True)
-    code_map = {
-        "best_scored_edge": 1,
-        "merged": 2,
-        "new_track": 3,
-        "omitted_by_higher_score_or_track_claim": 4,
-        "no_valid_link_started_new_track": 5,
-        "leftover_attached_to_nearest_track": 6,
-        "initialized_from_first_slice": 7,
-        "omitted_unmatched_to_first_slice": 8,
-        "omitted_small_unmatched": 9,
-    }
-    overlays = []
-    reason_stack = []
-    id_stack = []
-
-    for z, sm in enumerate(per_slice_masks):
-        h, w = sm.shape[:2]
-        rgb = np.zeros((h, w, 3), dtype=np.uint8)
-        rgb[sm > 0] = np.array([40, 40, 40], dtype=np.uint8)
-        reason_map = np.zeros((h, w), dtype=np.uint8)
-        tid_map = np.zeros((h, w), dtype=np.int32)
-
-        rec = debug_records[z] if z < len(debug_records) else {"nodes": []}
-        for node in rec.get("nodes", []):
-            inst_id = int(node.get("instance_id", 0))
-            if inst_id <= 0:
-                continue
-            mask = (sm == inst_id)
-            if not np.any(mask):
-                continue
-            status = str(node.get("status", ""))
-            reason = str(node.get("reason", ""))
-            tid = int(node.get("track_id") or 0)
-            if status == "assigned":
-                color = np.array([0, 220, 0], dtype=np.uint8)
-                reason_val = code_map["best_scored_edge"]
-            elif status == "merged":
-                color = np.array([255, 180, 0], dtype=np.uint8)
-                reason_val = code_map["merged"]
-            elif status == "new_track":
-                if reason.startswith("omitted_by_higher_score"):
-                    color = np.array([0, 0, 255], dtype=np.uint8)
-                    reason_val = code_map["omitted_by_higher_score_or_track_claim"]
-                else:
-                    color = np.array([200, 0, 200], dtype=np.uint8)
-                    reason_val = code_map["new_track"]
-            elif status == "forced_attach":
-                color = np.array([0, 255, 255], dtype=np.uint8)
-                reason_val = code_map["leftover_attached_to_nearest_track"]
-            elif status == "anchor":
-                color = np.array([120, 255, 120], dtype=np.uint8)
-                reason_val = code_map["initialized_from_first_slice"]
-            elif status == "omitted":
-                if reason == "omitted_small_unmatched":
-                    color = np.array([120, 120, 120], dtype=np.uint8)
-                    reason_val = code_map["omitted_small_unmatched"]
-                else:
-                    color = np.array([40, 40, 200], dtype=np.uint8)
-                    reason_val = code_map["omitted_unmatched_to_first_slice"]
-            else:
-                color = np.array([100, 100, 255], dtype=np.uint8)
-                reason_val = code_map["no_valid_link_started_new_track"]
-
-            rgb[mask] = color
-            reason_map[mask] = reason_val
-            if tid > 0:
-                tid_map[mask] = tid
-
-            ys, xs = np.where(mask)
-            cy, cx = int(ys.mean()), int(xs.mean())
-            short = reason[:18]
-            text = f"i{inst_id}->t{tid}:{short}"
-            cv2.putText(rgb, text, (max(0, cx - 20), max(12, cy)), cv2.FONT_HERSHEY_SIMPLEX, 0.30, (255, 255, 255), 1, cv2.LINE_AA)
-
-        overlays.append(rgb)
-        reason_stack.append(reason_map)
-        id_stack.append(tid_map)
-
-    io.imsave(os.path.join(output_dir, "semi3d_link_debug_overlay.tif"), np.stack(overlays, axis=0))
-    io.imsave(os.path.join(output_dir, "semi3d_link_debug_reason_codes.tif"), np.stack(reason_stack, axis=0))
-    io.imsave(os.path.join(output_dir, "semi3d_link_debug_track_ids.tif"), np.stack(id_stack, axis=0).astype(np.int32))
-    with open(os.path.join(output_dir, "semi3d_link_debug_records.json"), "w", encoding="utf-8") as f:
-        json.dump(debug_records, f, indent=2)
-
-
 def _run_stage2(args):
     np.random.seed(args.seed)
     random.seed(args.seed)
@@ -320,8 +231,7 @@ def _run_stage2(args):
         stage1_prob = io.imread(prob_path).astype(np.float32)
 
     LOGGER.info("[semi3d:stage2] linking tracks")
-    link_debug = None
-    link_out = build_association_tracks(
+    tracks = build_association_tracks(
         per_slice_masks,
         link_iou=args.link_iou,
         link_dist=args.link_dist,
@@ -329,15 +239,7 @@ def _run_stage2(args):
         max_gap=args.max_gap,
         gpu_prefilter=args.link_gpu_prefilter,
         merge_dist=args.merge_dist,
-        link_workers=args.link_workers,
-        return_debug=getattr(args, "save_link_debug", False),
-        force_attach_min_area=getattr(args, "force_attach_min_area", 8),
-        anchor_first_slice=getattr(args, "anchor_first_slice", True),
     )
-    if getattr(args, "save_link_debug", False):
-        tracks, link_debug = link_out
-    else:
-        tracks = link_out
 
     if args.refiner_model is not None:
         if not os.path.exists(args.refiner_model):
@@ -375,8 +277,6 @@ def _run_stage2(args):
     if args.save_3d_labels and labels3d is not None:
         io.imsave(os.path.join(args.output, "semi3d_track_labels.tif"), labels3d.astype(np.int32))
     io.imsave(os.path.join(args.output, "semi3d_reconstructed_flags.tif"), reconstructed_flags.astype(np.uint8))
-    if getattr(args, "save_link_debug", False) and link_debug is not None:
-        _save_link_debug_overlay(per_slice_masks, link_debug, args.output)
     LOGGER.info("[semi3d:stage2] complete")
     return len(tracks), len(kept)
 
@@ -424,13 +324,9 @@ def run_from_cellpose_args(args):
             memmap_stage2_inputs=args.semi3d_memmap_stage2_inputs,
             link_gpu_prefilter=args.semi3d_link_gpu_prefilter,
             merge_dist=args.semi3d_merge_dist,
-            link_workers=args.semi3d_link_workers,
-            force_attach_min_area=args.semi3d_force_attach_min_area,
-            anchor_first_slice=not args.semi3d_disable_anchor_first_slice,
             allow_overlap_recon=args.semi3d_allow_overlap_recon,
             recon_min_free_fraction=args.semi3d_recon_min_free_fraction,
             save_debug_tiff=args.semi3d_save_debug_tiff,
-            save_link_debug=args.semi3d_save_link_debug,
             stage1_prob=args.semi3d_stage1_prob,
             use_prob_occupancy=args.semi3d_use_prob_occupancy,
             prob_occupancy_thresh=args.semi3d_prob_occupancy_thresh,
@@ -460,7 +356,6 @@ def run_from_cellpose_args(args):
             border_exclusion_px=args.semi3d_border_exclusion_px,
             save_flows=args.semi3d_save_flows,
             save_debug_tiff=args.semi3d_save_debug_tiff,
-            save_link_debug=args.semi3d_save_link_debug,
             stage1_prob=args.semi3d_stage1_prob,
             use_prob_occupancy=args.semi3d_use_prob_occupancy,
             prob_occupancy_thresh=args.semi3d_prob_occupancy_thresh,
@@ -500,13 +395,9 @@ def run_from_cellpose_args(args):
             memmap_stage2_inputs=args.semi3d_memmap_stage2_inputs,
             link_gpu_prefilter=args.semi3d_link_gpu_prefilter,
             merge_dist=args.semi3d_merge_dist,
-            link_workers=args.semi3d_link_workers,
-            force_attach_min_area=args.semi3d_force_attach_min_area,
-            anchor_first_slice=not args.semi3d_disable_anchor_first_slice,
             allow_overlap_recon=args.semi3d_allow_overlap_recon,
             recon_min_free_fraction=args.semi3d_recon_min_free_fraction,
             save_debug_tiff=args.semi3d_save_debug_tiff,
-            save_link_debug=args.semi3d_save_link_debug,
             stage1_prob=args.semi3d_stage1_prob,
             use_prob_occupancy=args.semi3d_use_prob_occupancy,
             prob_occupancy_thresh=args.semi3d_prob_occupancy_thresh,
