@@ -6,6 +6,21 @@ from cellpose.semi3d.training import dataset
 from cellpose.cli import get_arg_parser
 
 
+
+
+def test_first_slice_masks_are_never_dropped():
+    s0 = np.zeros((48, 48), dtype=np.int32)
+    s1 = np.zeros((48, 48), dtype=np.int32)
+    s0[5:10, 5:10] = 1
+    s0[20:26, 20:26] = 2
+    s0[35:40, 8:13] = 3
+    # second slice can be empty; first-slice tracks must still be preserved.
+
+    tracks = build_association_tracks([s0, s1], link_iou=0.5, link_dist=5.0, max_gap=2)
+    assert len(tracks) >= 3
+    starts = sorted([tr.nodes[0].instance_id for tr in tracks[:3]])
+    assert starts == [1, 2, 3]
+
 def test_gap_tolerant_linking_and_mandatory_reconstruction():
     s0 = np.zeros((32, 32), dtype=np.int32)
     s1 = np.zeros((32, 32), dtype=np.int32)

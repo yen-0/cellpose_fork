@@ -186,6 +186,15 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
         current_nodes = _extract_nodes_for_slice(slice_masks[z], z)
         used = set()
 
+        # Hard guarantee: NEVER drop any first-slice masks.
+        if z == 0:
+            for node in current_nodes:
+                tr = Track(track_id=next_track_id, nodes=[node])
+                next_track_id += 1
+                tracks.append(tr)
+                active.append(tr)
+            continue
+
         grid, cs = _build_spatial_grid(current_nodes, link_dist)
         gpu_candidates = _gpu_prefilter_candidates(active, current_nodes, link_dist, size_tolerance) if gpu_prefilter else None
 
