@@ -460,3 +460,27 @@ def test_reconstruction_never_overwrites_direct_claims():
     assert len(vals) == 1
     # reconstruction flags in overlapped region should be zero due to occupancy lock
     assert not np.any(rec_flags[1][8:12, 8:12])
+
+
+def test_stable_label_colormap_reduces_duplicates_beyond_60():
+    from cellpose.semi3d.cli import _stable_label_colormap
+
+    cmap = _stable_label_colormap(128)
+    unique = np.unique(cmap[1:], axis=0)
+    assert unique.shape[0] >= 120
+
+
+def test_labels_to_rgb_is_deterministic():
+    from cellpose.semi3d.cli import _labels_to_rgb
+
+    labels = np.zeros((3, 16, 16), dtype=np.int32)
+    labels[0, 2:6, 2:6] = 1
+    labels[1, 4:8, 4:8] = 61
+    labels[2, 6:10, 6:10] = 121
+
+    rgb1 = _labels_to_rgb(labels)
+    rgb2 = _labels_to_rgb(labels)
+    assert rgb1.dtype == np.uint8
+    assert rgb1.shape == labels.shape + (3,)
+    assert np.array_equal(rgb1, rgb2)
+    assert not np.array_equal(rgb1[1, 4, 4], rgb1[2, 6, 6])

@@ -4,7 +4,7 @@ import logging
 from types import SimpleNamespace
 import numpy as np
 from scipy.ndimage import gaussian_filter
-from cellpose import io, models
+from cellpose import io, models, utils
 from .linking import build_association_tracks
 from .refine import relabel_tracks
 from .training.train import run_training, extract_track_features
@@ -12,6 +12,12 @@ from .evaluation.eval import run_evaluation
 from .training.model import RefinerModel
 
 LOGGER = logging.getLogger(__name__)
+
+try:
+    from tqdm.auto import tqdm
+except Exception:  # pragma: no cover
+    def tqdm(iterable=None, **kwargs):
+        return iterable
 
 
 def _load_stack(path):
@@ -78,6 +84,26 @@ def _extract_debug_maps(flows):
             p = np.squeeze(p)
         prob_slice = p
     return flow_slice, flow_mag, prob_slice
+
+
+def _stable_label_colormap(max_label):
+    max_label = int(max(0, max_label))
+    colors = np.zeros((max_label + 1, 3), dtype=np.uint8)
+    if max_label == 0:
+        return colors
+
+    ids = np.arange(1, max_label + 1, dtype=np.float32)
+    hue = np.mod(ids * 0.6180339887498949, 1.0)
+    sat = 0.55 + 0.45 * np.mod(ids * 0.7548776662466927, 1.0)
+    val = 0.72 + 0.28 * np.mod(ids * 0.5698402909980532, 1.0)
+    hsv = np.stack([hue, sat, val], axis=1)
+    colors[1:] = (utils.hsv_to_rgb(hsv) * 255).astype(np.uint8)
+    return colors
+
+
+def _labels_to_rgb(labels):
+    table = _stable_label_colormap(int(np.max(labels)))
+    return table[labels]
 
 
 
@@ -239,6 +265,7 @@ def _run_stage2(args):
         max_gap=args.max_gap,
         gpu_prefilter=args.link_gpu_prefilter,
         merge_dist=args.merge_dist,
+        show_progress=True,
     )
 
     if args.refiner_model is not None:
@@ -247,7 +274,10 @@ def _run_stage2(args):
         refiner = RefinerModel.load(args.refiner_model)
         if len(tracks):
             LOGGER.info("[semi3d:stage2] scoring %d tracks with %s", len(tracks), "GPU" if args.stage2_use_gpu else "CPU")
-            feats = np.stack([extract_track_features(tr, stack, source_masks=per_slice_masks, all_tracks=tracks) for tr in tracks], axis=0)
+            feats = np.stack([
+                extract_track_features(tr, stack, source_masks=per_slice_masks, all_tracks=tracks)
+                for tr in tqdm(tracks, desc="[semi3d:stage2] extracting track features", unit="track")
+            ], axis=0)
             feats = _adapt_feature_dim(feats, refiner)
             keep_prob = _predict_keep_prob(refiner, feats, use_gpu=args.stage2_use_gpu)
             if getattr(args, "save_debug_tiff", False):
@@ -270,10 +300,12 @@ def _run_stage2(args):
         min_free_fraction=args.recon_min_free_fraction,
         prob_stack=stage1_prob if args.use_prob_occupancy else None,
         prob_occupancy_thresh=args.prob_occupancy_thresh,
+        show_progress=True,
     )
 
     refined_stack = np.stack(refined, axis=0).astype(np.int32)
     io.imsave(os.path.join(args.output, "semi3d_refined_masks.tif"), refined_stack)
+    io.imsave(os.path.join(args.output, "semi3d_refined_masks_rgb.tif"), _labels_to_rgb(refined_stack).astype(np.uint8))
     if args.save_3d_labels and labels3d is not None:
         io.imsave(os.path.join(args.output, "semi3d_track_labels.tif"), labels3d.astype(np.int32))
     io.imsave(os.path.join(args.output, "semi3d_reconstructed_flags.tif"), reconstructed_flags.astype(np.uint8))

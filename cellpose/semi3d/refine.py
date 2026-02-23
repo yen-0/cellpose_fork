@@ -1,4 +1,11 @@
 import numpy as np
+
+try:
+    from tqdm.auto import tqdm
+except Exception:  # pragma: no cover
+    def tqdm(iterable=None, **kwargs):
+        return iterable
+
 from .interpolation import interpolate_missing_mask
 from .confidence import track_confidence
 
@@ -80,7 +87,7 @@ def recover_track_gaps(track, image_stack, flow_stack=None, fill_edges=False, so
 
 def relabel_tracks(tracks, image_stack, flow_stack=None, min_track_len=2, min_conf=0.05,
                    fill_edges=False, return_track_labels=True, source_masks=None, avoid_occupied=True, min_free_fraction=0.25,
-                   prob_stack=None, prob_occupancy_thresh=0.5):
+                   prob_stack=None, prob_occupancy_thresh=0.5, show_progress=False):
     zcount = len(image_stack)
     out = [np.zeros(image_stack[0].shape[:2], dtype=np.int32) for _ in range(zcount)]
     track_labels = np.zeros((zcount, *image_stack[0].shape[:2]), dtype=np.int32) if return_track_labels else None
@@ -88,7 +95,8 @@ def relabel_tracks(tracks, image_stack, flow_stack=None, min_track_len=2, min_co
     next_id = 1
     kept = []
 
-    for tr in tracks:
+    track_iter = tqdm(tracks, desc="[semi3d:stage2] filtering tracks", unit="track") if show_progress else tracks
+    for tr in track_iter:
         conf = track_confidence(tr, image_stack, source_masks=source_masks)
         has_first_slice_node = any(n.z == 0 for n in tr.nodes)
         if not has_first_slice_node and (len(tr.nodes) < min_track_len or conf < min_conf):
@@ -99,7 +107,8 @@ def relabel_tracks(tracks, image_stack, flow_stack=None, min_track_len=2, min_co
 
     locked_direct = [np.zeros(image_stack[0].shape[:2], dtype=bool) for _ in range(zcount)]
     track_to_tid = {}
-    for tr, _ in kept:
+    direct_iter = tqdm(kept, desc="[semi3d:stage2] placing direct masks", unit="track") if show_progress else kept
+    for tr, _ in direct_iter:
         tid = next_id
         next_id += 1
         track_to_tid[id(tr)] = tid
@@ -115,7 +124,8 @@ def relabel_tracks(tracks, image_stack, flow_stack=None, min_track_len=2, min_co
             if track_labels is not None:
                 track_labels[n.z][nmask_use] = tid
 
-    for tr, _ in kept:
+    recon_iter = tqdm(kept, desc="[semi3d:stage2] reconstructing gaps", unit="track") if show_progress else kept
+    for tr, _ in recon_iter:
         tid = track_to_tid[id(tr)]
         for z, m_pred, _, _ in recover_track_gaps(tr, image_stack, flow_stack=flow_stack, fill_edges=fill_edges, source_masks=source_masks):
             if m_pred is None or not np.any(m_pred):
