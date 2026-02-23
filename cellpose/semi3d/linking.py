@@ -186,6 +186,15 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
         current_nodes = _extract_nodes_for_slice(slice_masks[z], z)
         used = set()
 
+        # Hard guarantee: NEVER drop any first-slice masks.
+        if z == 0:
+            for node in current_nodes:
+                tr = Track(track_id=next_track_id, nodes=[node])
+                next_track_id += 1
+                tracks.append(tr)
+                active.append(tr)
+            continue
+
         grid, cs = _build_spatial_grid(current_nodes, link_dist)
         gpu_candidates = _gpu_prefilter_candidates(active, current_nodes, link_dist, size_tolerance) if gpu_prefilter else None
 
@@ -205,16 +214,13 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                 if gap < 1 or gap > max_gap:
                     continue
                 dist = np.linalg.norm(node.centroid - last.centroid)
-                if dist > link_dist:
+                if dist > (link_dist * (1.0 + min(1.0, 0.5 * (gap - 1)))):
                     continue
                 area_ratio = min(last.area, node.area) / max(last.area, node.area)
-                if area_ratio < (size_tolerance * (1.0 - min(0.3, 0.08 * (gap - 1)))):
-                    continue
                 poly_sim = _polygon_similarity(last, node)
                 iou = _node_iou(last, node)
-                if iou < link_iou and gap == 1 and poly_sim < 0.45:
-                    continue
-                score = iou + 0.5 * area_ratio - 0.01 * dist - 0.03 * (gap - 1) + 0.1 * poly_sim
+                # Never hard-reject by low IoU: keep weak-overlap motion matches eligible.
+                score = iou + 0.30 * area_ratio - 0.006 * dist - 0.015 * (gap - 1) + 0.05 * poly_sim
                 if score > best_score:
                     best_score = score
                     best = (i, node, iou, gap)
@@ -230,14 +236,16 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                         if np.linalg.norm(n2.centroid - node.centroid) <= merge_dist:
                             test = _merge_nodes([node, n2])
                             merged_iou = _node_iou(last, test)
-                            if merged_iou >= iou - 0.02:
+                            # Merge decision based ONLY on IoU improvement.
+                            if merged_iou > iou:
                                 merge_nodes.append(n2)
                                 used.add(j)
+                                node = test
+                                iou = merged_iou
                     if len(merge_nodes) > 1:
                         node = _merge_nodes(merge_nodes)
                         iou = _node_iou(last, node)
 
-                last.compact()
                 tr.nodes.append(node)
                 tr.links.append(iou)
                 skips = max(0, gap - 1)
@@ -245,6 +253,36 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                 if skips > 0:
                     tr.gap_hist[skips] = tr.gap_hist.get(skips, 0) + 1
                 used.add(idx)
+
+        # second-pass forced linking for remaining nodes: attach to nearest viable active track
+        leftovers = [i for i in range(len(current_nodes)) if i not in used]
+        for i in leftovers:
+            node = current_nodes[i]
+            best_ai, best_gap, best_dist = None, None, None
+            for ai, tr in enumerate(active):
+                last = tr.nodes[-1]
+                gap = node.z - last.z
+                if gap < 1 or gap > max_gap:
+                    continue
+                dist = np.linalg.norm(node.centroid - last.centroid)
+                if dist > (2.0 * link_dist):
+                    continue
+                if best_dist is None or dist < best_dist:
+                    best_dist = dist
+                    best_ai = ai
+                    best_gap = gap
+            if best_ai is None:
+                continue
+            tr = active[best_ai]
+            last = tr.nodes[-1]
+            iou = _node_iou(last, node)
+            tr.nodes.append(node)
+            tr.links.append(iou)
+            skips = max(0, best_gap - 1)
+            tr.gap_bridges += skips
+            if skips > 0:
+                tr.gap_hist[skips] = tr.gap_hist.get(skips, 0) + 1
+            used.add(i)
 
         for i, node in enumerate(current_nodes):
             if i not in used:

@@ -6,6 +6,21 @@ from cellpose.semi3d.training import dataset
 from cellpose.cli import get_arg_parser
 
 
+
+
+def test_first_slice_masks_are_never_dropped():
+    s0 = np.zeros((48, 48), dtype=np.int32)
+    s1 = np.zeros((48, 48), dtype=np.int32)
+    s0[5:10, 5:10] = 1
+    s0[20:26, 20:26] = 2
+    s0[35:40, 8:13] = 3
+    # second slice can be empty; first-slice tracks must still be preserved.
+
+    tracks = build_association_tracks([s0, s1], link_iou=0.5, link_dist=5.0, max_gap=2)
+    assert len(tracks) >= 3
+    starts = sorted([tr.nodes[0].instance_id for tr in tracks[:3]])
+    assert starts == [1, 2, 3]
+
 def test_gap_tolerant_linking_and_mandatory_reconstruction():
     s0 = np.zeros((32, 32), dtype=np.int32)
     s1 = np.zeros((32, 32), dtype=np.int32)
@@ -31,6 +46,33 @@ def test_two_skip_linking_supported():
     assert len(tracks) == 1
     assert tracks[0].gap_hist.get(2, 0) == 1
 
+
+
+
+
+
+def test_merge_requires_iou_improvement_only():
+    s0 = np.zeros((48, 48), dtype=np.int32)
+    s1 = np.zeros((48, 48), dtype=np.int32)
+    s0[16:24, 16:24] = 1
+    s1[16:24, 16:20] = 2
+    s1[16:24, 20:24] = 3
+
+    tracks = build_association_tracks([s0, s1], link_iou=0.0, link_dist=14.0, max_gap=2)
+    assert len(tracks) == 1
+    assert len(tracks[0].nodes) == 2
+    assert tracks[0].nodes[-1].area >= 60
+
+def test_forced_link_attaches_leftover_with_tiny_iou():
+    s0 = np.zeros((64, 64), dtype=np.int32)
+    s1 = np.zeros((64, 64), dtype=np.int32)
+    s0[8:14, 8:14] = 1
+    # no-overlap and fairly far, but within 2*link_dist fallback
+    s1[22:28, 8:14] = 2
+
+    tracks = build_association_tracks([s0, s1], link_iou=0.5, link_dist=10.0, max_gap=2)
+    assert len(tracks) == 1
+    assert len(tracks[0].nodes) == 2
 
 def test_edge_fill_reconstructs_first_and_last_slices():
     s0 = np.zeros((32, 32), dtype=np.int32)
