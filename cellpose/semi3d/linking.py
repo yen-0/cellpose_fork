@@ -622,13 +622,22 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
     # 5) Post-link short-track merge pass: merge newly-created short tracks into larger tracks
     # using raw IoU_B (raw pixel intersections) on overlapping z slices.
     if short_track_merge_iou_b_min is None:
-        short_track_merge_iou_b_min = max(0.12, 0.6 * float(merge_iou_b_min))
+        short_track_merge_iou_b_min = max(0.08, 0.4 * float(merge_iou_b_min))
 
     removed_track_ids = set()
     short_tracks = sorted(
         [tr for tr in tracks if 0 < len(tr.nodes) <= int(short_track_merge_len)],
         key=lambda t: (len(t.nodes), t.track_id),
     )
+    LOGGER.info(
+        "semi3d short-track merge pass: candidates=%d threshold_iou_b=%.4f",
+        len(short_tracks),
+        float(short_track_merge_iou_b_min),
+    )
+
+    short_merge_z_tol = 1
+    short_merge_attempts = 0
+    short_merge_success = 0
 
     for tr in short_tracks:
         if tr.track_id in removed_track_ids:
@@ -641,48 +650,69 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                 continue
             if len(target.nodes) <= len(tr.nodes):
                 continue
-            t_by_z = {n.z: (idx, n) for idx, n in enumerate(target.nodes)}
+
             matched = []
             for n in tr.nodes:
-                zn = t_by_z.get(n.z)
-                if zn is None:
-                    continue
-                _, tn = zn
-                iou_b_raw = _node_raw_iou_b(tn, n)
-                inter_raw = _node_raw_intersection(tn, n)
-                if inter_raw <= 0:
-                    continue
-                if iou_b_raw < float(short_track_merge_iou_b_min):
-                    continue
-                matched.append((n.z, iou_b_raw, inter_raw))
+                local_best = None
+                for idx, tn in enumerate(target.nodes):
+                    if abs(int(tn.z) - int(n.z)) > short_merge_z_tol:
+                        continue
+                    iou_b_raw = _node_raw_iou_b(tn, n)
+                    inter_raw = _node_raw_intersection(tn, n)
+                    if inter_raw <= 0:
+                        continue
+                    if iou_b_raw < float(short_track_merge_iou_b_min):
+                        continue
+                    if local_best is None or iou_b_raw > local_best[1]:
+                        local_best = (idx, iou_b_raw, inter_raw)
+                if local_best is not None:
+                    matched.append((n, local_best[0], local_best[1], local_best[2]))
+
             if not matched:
                 continue
-            score = float(np.mean([m[1] for m in matched])) + 0.01 * len(matched)
+
+            mean_iou_b = float(np.mean([m[2] for m in matched]))
+            score = mean_iou_b + 0.01 * len(matched)
             if score > best_score:
                 best_score = score
                 best_target = target
-                best_matches = {zv for zv, _, _ in matched}
+                best_matches = matched
 
         if best_target is None or not best_matches:
+            LOGGER.info(
+                "semi3d short-track merge: no target for track_id=%d len=%d",
+                tr.track_id,
+                len(tr.nodes),
+            )
             continue
 
+        short_merge_attempts += 1
         merged_any = False
-        target_by_z = {n.z: idx for idx, n in enumerate(best_target.nodes)}
-        for n in tr.nodes:
-            if n.z not in best_matches:
-                continue
-            idx = target_by_z.get(n.z)
-            if idx is None:
-                continue
-            best_target.nodes[idx] = _merge_nodes([best_target.nodes[idx], n])
+        for short_node, idx, iou_b_raw, inter_raw in best_matches:
+            best_target.nodes[idx] = _merge_nodes([best_target.nodes[idx], short_node])
             merged_any = True
 
         if merged_any:
             best_target.nodes.sort(key=lambda n: n.z)
             _recompute_track_links(best_target)
             removed_track_ids.add(tr.track_id)
+            short_merge_success += 1
+            LOGGER.info(
+                "semi3d short-track merge success: source_track=%d target_track=%d matches=%d score=%.4f",
+                tr.track_id,
+                best_target.track_id,
+                len(best_matches),
+                best_score,
+            )
 
     if removed_track_ids:
         tracks = [tr for tr in tracks if tr.track_id not in removed_track_ids]
+
+    LOGGER.info(
+        "semi3d short-track merge summary: attempted=%d merged=%d removed_tracks=%d",
+        short_merge_attempts,
+        short_merge_success,
+        len(removed_track_ids),
+    )
 
     return tracks
