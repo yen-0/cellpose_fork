@@ -1,7 +1,11 @@
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
+import logging
 import numpy as np
 import cv2
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
@@ -79,6 +83,23 @@ def _node_overlap_scores(node_a: InstanceNode, node_b: InstanceNode,
     iou_a = float(inter / node_a.area) if node_a.area > 0 else 0.0
     iou_b = float(inter / node_b.area) if node_b.area > 0 else 0.0
     return iou_a, iou_b
+
+
+def _node_intersection(node_a: InstanceNode, node_b: InstanceNode,
+                       slice_mask_a: Optional[np.ndarray] = None,
+                       slice_mask_b: Optional[np.ndarray] = None) -> int:
+    ay0, ay1, ax0, ax1 = node_a.bbox
+    by0, by1, bx0, bx1 = node_b.bbox
+    iy0, iy1 = max(ay0, by0), min(ay1, by1)
+    ix0, ix1 = max(ax0, bx0), min(ax1, bx1)
+    if iy0 >= iy1 or ix0 >= ix1:
+        return 0
+
+    a_crop = _node_mask_crop(node_a, slice_mask_a)
+    b_crop = _node_mask_crop(node_b, slice_mask_b)
+    a_view = a_crop[iy0 - ay0:iy1 - ay0, ix0 - ax0:ix1 - ax0]
+    b_view = b_crop[iy0 - by0:iy1 - by0, ix0 - bx0:ix1 - bx0]
+    return int(np.logical_and(a_view, b_view).sum())
 
 
 def _node_iou(node_a: InstanceNode, node_b: InstanceNode, slice_mask_a: Optional[np.ndarray] = None, slice_mask_b: Optional[np.ndarray] = None) -> float:
@@ -263,10 +284,13 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                         n2 = current_nodes[j]
                         if np.linalg.norm(n2.centroid - node.centroid) <= merge_dist:
                             test = _merge_nodes([node, n2])
+                            n2_inter = _node_intersection(last, n2)
+                            n2_dist = float(np.linalg.norm(n2.centroid - node.centroid))
+                            n2_merge_radius = 2.0 * float(max(1, n2.area))
                             _, n2_iou_b = _node_overlap_scores(last, n2)
                             _, merged_iou_b = _node_overlap_scores(last, test)
                             # Merge decision uses ONLY IoU B evidence (candidate-denominator overlap).
-                            if n2_iou_b >= 0.5 and merged_iou_b >= iou_b:
+                            if (n2_inter > 0 or n2_dist <= n2_merge_radius) and merged_iou_b >= iou_b:
                                 merge_nodes.append(n2)
                                 used.add(j)
                                 node = test
@@ -283,24 +307,59 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                     tr.gap_hist[skips] = tr.gap_hist.get(skips, 0) + 1
                 used.add(idx)
 
-        # second-pass forced linking for remaining nodes: attach to nearest viable active track
+        # second-pass forced linking for remaining nodes: aggressively attach to an existing graph.
         leftovers = [i for i in range(len(current_nodes)) if i not in used]
         for i in leftovers:
             node = current_nodes[i]
             best_ai, best_gap, best_dist = None, None, None
+            best_inter, best_iou_a = -1, -1.0
+            near_ai, near_gap, near_dist = None, None, None
+            radius_gate = 2.0 * float(max(1, node.area))
             for ai, tr in enumerate(active):
                 last = tr.nodes[-1]
                 gap = node.z - last.z
-                if gap < 1 or gap > max_gap:
+                if gap < 1:
                     continue
                 dist = np.linalg.norm(node.centroid - last.centroid)
-                if dist > (2.0 * link_dist):
+                inter = _node_intersection(last, node)
+                iou_a, _ = _node_overlap_scores(last, node)
+
+                # Track nearest fallback regardless of quality, used only as last resort.
+                if near_dist is None or dist < near_dist:
+                    near_dist = dist
+                    near_ai = ai
+                    near_gap = gap
+
+                # Strong preference: any overlap, or distance within 2x area radius.
+                if inter <= 0 and dist > radius_gate:
                     continue
-                if best_dist is None or dist < best_dist:
+
+                if (inter > best_inter) or (inter == best_inter and iou_a > best_iou_a) or (
+                    inter == best_inter and iou_a == best_iou_a and (best_dist is None or dist < best_dist)
+                ):
+                    best_inter = inter
+                    best_iou_a = iou_a
                     best_dist = dist
                     best_ai = ai
                     best_gap = gap
+
+            # If we still could not satisfy overlap/radius rule, attach to nearest active graph.
+            if best_ai is None and near_ai is not None:
+                best_ai, best_gap, best_dist = near_ai, near_gap, near_dist
+                tr_near = active[near_ai]
+                near_last = tr_near.nodes[-1]
+                near_inter = _node_intersection(near_last, node)
+                near_iou_a, near_iou_b = _node_overlap_scores(near_last, node)
+                LOGGER.info(
+                    "semi3d forced-nearest attach z=%d inst=%d -> track=%d (gap=%d, dist=%.4f, inter=%d, iou_a=%.6f, iou_b=%.6f, radius_gate=%.4f)",
+                    z, node.instance_id, tr_near.track_id, best_gap, float(best_dist), near_inter, near_iou_a, near_iou_b, radius_gate
+                )
+
             if best_ai is None:
+                LOGGER.warning(
+                    "semi3d new-track unavoidable z=%d inst=%d: no active tracks available for connection",
+                    z, node.instance_id
+                )
                 continue
             tr = active[best_ai]
             last = tr.nodes[-1]
@@ -315,6 +374,39 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
 
         for i, node in enumerate(current_nodes):
             if i not in used:
+                if active:
+                    diagnostics = []
+                    for tr in active:
+                        last = tr.nodes[-1]
+                        gap = node.z - last.z
+                        dist = float(np.linalg.norm(node.centroid - last.centroid))
+                        inter = _node_intersection(last, node)
+                        iou_a, iou_b = _node_overlap_scores(last, node)
+                        diagnostics.append((dist, tr.track_id, gap, inter, iou_a, iou_b))
+                    diagnostics.sort(key=lambda x: x[0])
+                    top = diagnostics[:3]
+                    LOGGER.warning(
+                        "semi3d creating new track z=%d inst=%d after failed connection checks; top_candidates=%s",
+                        z,
+                        node.instance_id,
+                        [
+                            {
+                                "track_id": tid,
+                                "gap": gap,
+                                "dist": round(dist, 4),
+                                "inter": inter,
+                                "iou_a": round(iou_a, 6),
+                                "iou_b": round(iou_b, 6),
+                            }
+                            for dist, tid, gap, inter, iou_a, iou_b in top
+                        ],
+                    )
+                else:
+                    LOGGER.warning(
+                        "semi3d creating new track z=%d inst=%d because there are zero active tracks",
+                        z,
+                        node.instance_id,
+                    )
                 tr = Track(track_id=next_track_id, nodes=[node])
                 next_track_id += 1
                 tracks.append(tr)

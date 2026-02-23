@@ -146,6 +146,36 @@ def test_edge_fill_reconstructs_first_and_last_slices():
     assert np.any(flags[3] > 0)
 
 
+
+
+def test_leftover_prefers_overlap_or_area_radius_before_new_track():
+    s0 = np.zeros((64, 64), dtype=np.int32)
+    s1 = np.zeros((64, 64), dtype=np.int32)
+
+    # active track from first slice
+    s0[8:14, 8:14] = 1
+    # leftover node with tiny overlap (single pixel) should still attach
+    s1[13:19, 13:19] = 2
+
+    tracks = build_association_tracks([s0, s1], link_iou=0.9, link_dist=2.0, max_gap=2)
+    assert len(tracks) == 1
+    assert len(tracks[0].nodes) == 2
+
+
+def test_leftover_falls_back_to_nearest_active_track_not_new_track():
+    s0 = np.zeros((96, 96), dtype=np.int32)
+    s1 = np.zeros((96, 96), dtype=np.int32)
+
+    s0[10:16, 10:16] = 1
+    s0[70:76, 70:76] = 2
+    # New node far from both with no overlap and outside 2*area radius gate
+    s1[40:46, 40:46] = 3
+
+    tracks = build_association_tracks([s0, s1], link_iou=0.9, link_dist=2.0, max_gap=2)
+    # Should connect to some existing graph instead of creating a third one
+    assert len(tracks) == 2
+    assert sorted(len(t.nodes) for t in tracks) == [1, 2]
+
 def test_training_loader_accepts_seg_npy(monkeypatch):
     fake_dir = "/data"
 
