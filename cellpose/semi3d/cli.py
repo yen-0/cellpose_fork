@@ -305,9 +305,9 @@ def _run_stage2(args):
 
     refined_stack = np.stack(refined, axis=0).astype(np.int32)
     io.imsave(os.path.join(args.output, "semi3d_refined_masks.tif"), refined_stack)
+    io.imsave(os.path.join(args.output, "semi3d_refined_masks_rgb.tif"), _labels_to_rgb(refined_stack).astype(np.uint8))
     if args.save_3d_labels and labels3d is not None:
         io.imsave(os.path.join(args.output, "semi3d_track_labels.tif"), labels3d.astype(np.int32))
-        io.imsave(os.path.join(args.output, "semi3d_track_labels_rgb.tif"), _labels_to_rgb(labels3d).astype(np.uint8))
     io.imsave(os.path.join(args.output, "semi3d_reconstructed_flags.tif"), reconstructed_flags.astype(np.uint8))
     LOGGER.info("[semi3d:stage2] complete")
     return len(tracks), len(kept)
