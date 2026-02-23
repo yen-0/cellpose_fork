@@ -176,6 +176,47 @@ def test_leftover_falls_back_to_nearest_active_track_not_new_track():
     assert len(tracks) == 2
     assert sorted(len(t.nodes) for t in tracks) == [1, 2]
 
+
+
+def test_links_back_using_two_to_three_slice_history_when_prev_missing():
+    slices = [np.zeros((48, 48), dtype=np.int32) for _ in range(4)]
+    # z0 object exists
+    slices[0][20:26, 20:26] = 1
+    # z1 object missing (dropout)
+    # z2 object reappears and should reconnect to original track via history
+    slices[2][21:27, 21:27] = 2
+
+    tracks = build_association_tracks(slices, link_iou=0.0, link_dist=8.0, max_gap=3)
+
+    linked = [t for t in tracks if len(t.nodes) >= 2]
+    assert len(linked) == 1
+    zs = [n.z for n in linked[0].nodes]
+    assert 0 in zs and 2 in zs
+    assert linked[0].gap_hist.get(1, 0) >= 1
+
+
+def test_history_anchor_can_beat_last_node_for_reappearance():
+    slices = [np.zeros((80, 80), dtype=np.int32) for _ in range(4)]
+    # Track A exists at z0 near (10,10), then drifts away at z1
+    slices[0][8:14, 8:14] = 1
+    slices[1][48:54, 48:54] = 3
+    # Track B at z1 near reappearance location
+    slices[1][10:16, 10:16] = 2
+    # reappearance at z2 should use recent history (z0 anchor) and link back to track A
+    slices[2][9:15, 9:15] = 4
+
+    tracks = build_association_tracks(slices, link_iou=0.0, link_dist=8.0, max_gap=3)
+
+    # find track that started from z0 id=1
+    t0 = None
+    for t in tracks:
+        if t.nodes and t.nodes[0].z == 0 and t.nodes[0].instance_id == 1:
+            t0 = t
+            break
+    assert t0 is not None
+    zs = [n.z for n in t0.nodes]
+    assert 2 in zs
+
 def test_training_loader_accepts_seg_npy(monkeypatch):
     fake_dir = "/data"
 

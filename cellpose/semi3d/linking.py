@@ -200,6 +200,33 @@ def _query_neighbors(node: InstanceNode, grid, cell_size: float):
     return out
 
 
+def _recent_track_nodes(track: Track, depth: int = 3) -> List[InstanceNode]:
+    if depth <= 0:
+        return []
+    return track.nodes[-depth:][::-1]
+
+
+def _best_anchor_metrics(track: Track, node: InstanceNode, max_gap: int, depth: int = 3):
+    """Pick best recent track node (up to `depth`) for matching this candidate node."""
+    best = None
+    for anchor in _recent_track_nodes(track, depth):
+        gap = node.z - anchor.z
+        if gap < 1 or gap > max_gap:
+            continue
+        inter = _node_intersection(anchor, node)
+        iou_a, iou_b = _node_overlap_scores(anchor, node)
+        dist = float(np.linalg.norm(node.centroid - anchor.centroid))
+        if best is None:
+            best = (anchor, gap, inter, iou_a, iou_b, dist)
+            continue
+        _, _, b_inter, b_iou_a, _, b_dist = best
+        if (iou_a > b_iou_a) or (iou_a == b_iou_a and inter > b_inter) or (
+            iou_a == b_iou_a and inter == b_inter and dist < b_dist
+        ):
+            best = (anchor, gap, inter, iou_a, iou_b, dist)
+    return best
+
+
 def _gpu_prefilter_candidates(active, current_nodes, link_dist, size_tolerance):
     try:
         import torch
@@ -249,7 +276,10 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
             last = tr.nodes[-1]
             if z - last.z > max_gap:
                 continue
-            candidate_idx = gpu_candidates.get(ai, []) if gpu_candidates is not None else _query_neighbors(last, grid, cs)
+            candidate_node_for_query = last
+            if len(tr.nodes) > 1:
+                candidate_node_for_query = tr.nodes[-1]
+            candidate_idx = gpu_candidates.get(ai, []) if gpu_candidates is not None else _query_neighbors(candidate_node_for_query, grid, cs)
 
             best = None
             best_score = -1e9
@@ -258,24 +288,23 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                 if i in used:
                     continue
                 node = current_nodes[i]
-                gap = node.z - last.z
-                if gap < 1 or gap > max_gap:
+                anchor_metrics = _best_anchor_metrics(tr, node, max_gap=max_gap, depth=3)
+                if anchor_metrics is None:
                     continue
-                dist = np.linalg.norm(node.centroid - last.centroid)
+                anchor, gap, inter, iou_a, iou_b, dist = anchor_metrics
                 if dist > (link_dist * (1.0 + min(1.0, 0.5 * (gap - 1)))):
                     continue
-                area_ratio = min(last.area, node.area) / max(last.area, node.area)
-                poly_sim = _polygon_similarity(last, node)
-                iou_a, iou_b = _node_overlap_scores(last, node)
+                area_ratio = min(anchor.area, node.area) / max(anchor.area, node.area)
+                poly_sim = _polygon_similarity(anchor, node)
                 # IoU A (relative to previous-slice mask) is the highest-priority evidence.
                 score = 0.30 * area_ratio - 0.006 * dist - 0.015 * (gap - 1) + 0.05 * poly_sim
                 if (iou_a > best_iou_a) or (iou_a == best_iou_a and score > best_score):
                     best_iou_a = iou_a
                     best_score = score
-                    best = (i, node, iou_a, iou_b, gap)
+                    best = (i, node, anchor, iou_a, iou_b, gap)
 
             if best is not None:
-                idx, node, iou_a, iou_b, gap = best
+                idx, node, anchor, iou_a, iou_b, gap = best
                 merge_nodes = [node]
                 if gap == 1:
                     for j in candidate_idx:
@@ -284,11 +313,11 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                         n2 = current_nodes[j]
                         if np.linalg.norm(n2.centroid - node.centroid) <= merge_dist:
                             test = _merge_nodes([node, n2])
-                            n2_inter = _node_intersection(last, n2)
+                            n2_inter = _node_intersection(anchor, n2)
                             n2_dist = float(np.linalg.norm(n2.centroid - node.centroid))
                             n2_merge_radius = 2.0 * float(max(1, n2.area))
-                            _, n2_iou_b = _node_overlap_scores(last, n2)
-                            _, merged_iou_b = _node_overlap_scores(last, test)
+                            _, n2_iou_b = _node_overlap_scores(anchor, n2)
+                            _, merged_iou_b = _node_overlap_scores(anchor, test)
                             # Merge decision uses ONLY IoU B evidence (candidate-denominator overlap).
                             if (n2_inter > 0 or n2_dist <= n2_merge_radius) and merged_iou_b >= iou_b:
                                 merge_nodes.append(n2)
@@ -297,7 +326,7 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                                 iou_b = merged_iou_b
                     if len(merge_nodes) > 1:
                         node = _merge_nodes(merge_nodes)
-                        iou_a, iou_b = _node_overlap_scores(last, node)
+                        iou_a, iou_b = _node_overlap_scores(anchor, node)
 
                 tr.nodes.append(node)
                 tr.links.append(iou_a)
@@ -316,13 +345,10 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
             near_ai, near_gap, near_dist = None, None, None
             radius_gate = 2.0 * float(max(1, node.area))
             for ai, tr in enumerate(active):
-                last = tr.nodes[-1]
-                gap = node.z - last.z
-                if gap < 1:
+                anchor_metrics = _best_anchor_metrics(tr, node, max_gap=max_gap, depth=3)
+                if anchor_metrics is None:
                     continue
-                dist = np.linalg.norm(node.centroid - last.centroid)
-                inter = _node_intersection(last, node)
-                iou_a, _ = _node_overlap_scores(last, node)
+                anchor, gap, inter, iou_a, _, dist = anchor_metrics
 
                 # Track nearest fallback regardless of quality, used only as last resort.
                 if near_dist is None or dist < near_dist:
@@ -347,12 +373,16 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
             if best_ai is None and near_ai is not None:
                 best_ai, best_gap, best_dist = near_ai, near_gap, near_dist
                 tr_near = active[near_ai]
-                near_last = tr_near.nodes[-1]
-                near_inter = _node_intersection(near_last, node)
-                near_iou_a, near_iou_b = _node_overlap_scores(near_last, node)
+                near_anchor = _best_anchor_metrics(tr_near, node, max_gap=max_gap, depth=3)
+                if near_anchor is not None:
+                    near_anchor_node, _, near_inter, near_iou_a, near_iou_b, _ = near_anchor
+                else:
+                    near_anchor_node = tr_near.nodes[-1]
+                    near_inter = _node_intersection(near_anchor_node, node)
+                    near_iou_a, near_iou_b = _node_overlap_scores(near_anchor_node, node)
                 LOGGER.info(
-                    "semi3d forced-nearest attach z=%d inst=%d -> track=%d (gap=%d, dist=%.4f, inter=%d, iou_a=%.6f, iou_b=%.6f, radius_gate=%.4f)",
-                    z, node.instance_id, tr_near.track_id, best_gap, float(best_dist), near_inter, near_iou_a, near_iou_b, radius_gate
+                    "semi3d forced-nearest attach z=%d inst=%d -> track=%d (anchor_z=%d, gap=%d, dist=%.4f, inter=%d, iou_a=%.6f, iou_b=%.6f, radius_gate=%.4f)",
+                    z, node.instance_id, tr_near.track_id, near_anchor_node.z, best_gap, float(best_dist), near_inter, near_iou_a, near_iou_b, radius_gate
                 )
 
             if best_ai is None:
@@ -362,8 +392,12 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                 )
                 continue
             tr = active[best_ai]
-            last = tr.nodes[-1]
-            iou, _ = _node_overlap_scores(last, node)
+            best_anchor = _best_anchor_metrics(tr, node, max_gap=max_gap, depth=3)
+            if best_anchor is not None:
+                anchor_node, _, _, iou, _, _ = best_anchor
+            else:
+                anchor_node = tr.nodes[-1]
+                iou, _ = _node_overlap_scores(anchor_node, node)
             tr.nodes.append(node)
             tr.links.append(iou)
             skips = max(0, best_gap - 1)
@@ -377,12 +411,11 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                 if active:
                     diagnostics = []
                     for tr in active:
-                        last = tr.nodes[-1]
-                        gap = node.z - last.z
-                        dist = float(np.linalg.norm(node.centroid - last.centroid))
-                        inter = _node_intersection(last, node)
-                        iou_a, iou_b = _node_overlap_scores(last, node)
-                        diagnostics.append((dist, tr.track_id, gap, inter, iou_a, iou_b))
+                        anchor_metrics = _best_anchor_metrics(tr, node, max_gap=max_gap, depth=3)
+                        if anchor_metrics is None:
+                            continue
+                        anchor, gap, inter, iou_a, iou_b, dist = anchor_metrics
+                        diagnostics.append((dist, tr.track_id, anchor.z, gap, inter, iou_a, iou_b))
                     diagnostics.sort(key=lambda x: x[0])
                     top = diagnostics[:3]
                     LOGGER.warning(
@@ -392,13 +425,14 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                         [
                             {
                                 "track_id": tid,
+                                "anchor_z": az,
                                 "gap": gap,
                                 "dist": round(dist, 4),
                                 "inter": inter,
                                 "iou_a": round(iou_a, 6),
                                 "iou_b": round(iou_b, 6),
                             }
-                            for dist, tid, gap, inter, iou_a, iou_b in top
+                            for dist, tid, az, gap, inter, iou_a, iou_b in top
                         ],
                     )
                 else:
