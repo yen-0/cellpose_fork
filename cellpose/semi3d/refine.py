@@ -90,7 +90,8 @@ def relabel_tracks(tracks, image_stack, flow_stack=None, min_track_len=2, min_co
 
     for tr in tracks:
         conf = track_confidence(tr, image_stack, source_masks=source_masks)
-        if len(tr.nodes) < min_track_len or conf < min_conf:
+        has_first_slice_node = any(n.z == 0 for n in tr.nodes)
+        if not has_first_slice_node and (len(tr.nodes) < min_track_len or conf < min_conf):
             continue
         kept.append((tr, conf))
 
@@ -105,7 +106,8 @@ def relabel_tracks(tracks, image_stack, flow_stack=None, min_track_len=2, min_co
         for n in tr.nodes:
             src = None if source_masks is None else source_masks[n.z]
             nmask = _node_mask(n, image_stack[0].shape[:2], slice_mask=src)
-            nmask_use = nmask if not avoid_occupied else np.logical_and(nmask, out[n.z] == 0)
+            force_keep_first_slice = (n.z == 0)
+            nmask_use = nmask if (force_keep_first_slice or not avoid_occupied) else np.logical_and(nmask, out[n.z] == 0)
             if not np.any(nmask_use):
                 continue
             out[n.z][nmask_use] = tid
