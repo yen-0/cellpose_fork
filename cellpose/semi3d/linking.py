@@ -352,7 +352,6 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
         current_nodes = _extract_nodes_for_slice(slice_masks[z], z)
         used = set()
 
-        # Hard guarantee: NEVER drop any first-slice masks.
         if z == 0:
             for node in current_nodes:
                 tr = Track(track_id=next_track_id, nodes=[node])
@@ -361,45 +360,35 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                 active.append(tr)
             continue
 
-        grid, cs = _build_spatial_grid(current_nodes, link_dist)
-        gpu_candidates = _gpu_prefilter_candidates(active, current_nodes, link_dist, size_tolerance) if gpu_prefilter else None
         assigned = []
 
-        # 1) Primary linking: ONLY previous slice anchors (z-1), globally rank pairings by IoU_A then distance.
-        # This avoids per-track greedy assignment and improves matching consistency.
+        # 1) Primary linking by IoU-only score (no distance ranking).
         prev_tracks = [tr for tr in active if tr.nodes and tr.nodes[-1].z == (z - 1)]
-        active_pos = {id(tr): i for i, tr in enumerate(active)}
-        pairwise_dist = _compute_pairwise_distances(prev_tracks, current_nodes, use_gpu=gpu_prefilter)
         pair_candidates = []
         for ti, tr in enumerate(prev_tracks):
-            last = tr.nodes[-1]
-            candidate_idx = gpu_candidates.get(active_pos[id(tr)], []) if gpu_candidates is not None else _query_neighbors(last, grid, cs)
-            widened = [ci for ci in range(len(current_nodes)) if pairwise_dist[ti, ci] <= (link_dist * 2.0)]
-            for ci in set(candidate_idx).union(widened):
-                dist = float(pairwise_dist[ti, ci])
-                if dist > (link_dist * 2.0):
+            anchor = tr.nodes[-1]
+            for ci, node in enumerate(current_nodes):
+                iou_a, _ = _node_overlap_scores(anchor, node)
+                raw_iou = _node_raw_iou(anchor, node)
+                score = max(iou_a, raw_iou)
+                if score < float(link_iou):
                     continue
-                node = current_nodes[ci]
-                iou_a, _ = _node_overlap_scores(last, node)
-                raw_iou = _node_raw_iou(last, node)
-                if iou_a < float(link_iou) and raw_iou < float(link_iou):
-                    continue
-                pair_candidates.append((max(iou_a, raw_iou), iou_a, -dist, ti, ci, last))
+                pair_candidates.append((score, raw_iou, iou_a, ti, ci, anchor))
 
         pair_candidates.sort(reverse=True)
         used_prev_tracks = set()
-        for score, iou_a, neg_dist, ti, ci, anchor in pair_candidates:
+        for score, raw_iou, iou_a, ti, ci, anchor in pair_candidates:
             if ti in used_prev_tracks or ci in used:
                 continue
             tr = prev_tracks[ti]
             node = current_nodes[ci]
             tr.nodes.append(node)
-            tr.links.append(iou_a)
+            tr.links.append(max(iou_a, raw_iou))
             assigned.append((tr, node, anchor, 1))
             used.add(ci)
             used_prev_tracks.add(ti)
 
-        # 2) Leftovers attach using two-slices-before anchors (z-2) for tracks absent at z-1.
+        # 2) Leftovers attach to z-2 anchors using IoU-only score.
         for i, node in enumerate(current_nodes):
             if i in used:
                 continue
@@ -408,43 +397,40 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                 last = tr.nodes[-1]
                 if last.z != (z - 2):
                     continue
-                dist = float(np.linalg.norm(node.centroid - last.centroid))
-                if dist > (link_dist * 2.0):
-                    continue
                 iou_a, _ = _node_overlap_scores(last, node)
                 raw_iou = _node_raw_iou(last, node)
                 score = max(iou_a, raw_iou)
                 if score < float(link_iou):
                     continue
-                if best is None or (score > best[2]) or (score == best[2] and dist < best[3]):
-                    best = (tr, last, score, dist)
+                if best is None or score > best[2]:
+                    best = (tr, last, score)
             if best is not None:
-                tr, anchor, iou_a, _ = best
+                tr, anchor, score = best
                 tr.nodes.append(node)
-                tr.links.append(iou_a)
+                tr.links.append(score)
                 assigned.append((tr, node, anchor, 2))
                 used.add(i)
 
-        # 3) If still unmatched, try any remaining graph via nearest/overlap before merge/new track.
+        # 3) If still unmatched, try any remaining graph via IoU-only score before merge/new track.
         leftovers = [i for i in range(len(current_nodes)) if i not in used]
         for i in leftovers:
             node = current_nodes[i]
-            best_tr, best_anchor, best_gap, best_iou, best_dist = None, None, None, -1.0, None
+            best_tr, best_anchor, best_gap, best_score = None, None, None, -1.0
             for tr in active:
                 anchor_metrics = _best_anchor_metrics(tr, node, max_gap=max_gap, depth=3)
                 if anchor_metrics is None:
                     continue
-                anchor, gap, inter, iou_a, _, dist = anchor_metrics
-                if inter <= 0:
-                    area_gate = _distance_gate_from_area(node.area, link_dist, scale=2.0)
-                    if dist > area_gate:
-                        continue
-                if (iou_a > best_iou) or (iou_a == best_iou and (best_dist is None or dist < best_dist)):
-                    best_tr, best_anchor, best_gap, best_iou, best_dist = tr, anchor, gap, iou_a, dist
+                anchor, gap, _, iou_a, _, _ = anchor_metrics
+                raw_iou = _node_raw_iou(anchor, node)
+                score = max(iou_a, raw_iou)
+                if score < float(link_iou):
+                    continue
+                if score > best_score:
+                    best_tr, best_anchor, best_gap, best_score = tr, anchor, gap, score
             if best_tr is None:
                 continue
             best_tr.nodes.append(node)
-            best_tr.links.append(best_iou)
+            best_tr.links.append(best_score)
             skips = max(0, best_gap - 1)
             best_tr.gap_bridges += skips
             if skips > 0:
@@ -459,7 +445,7 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
             tr.track_id for tr in active if tr.nodes and tr.nodes[-1].z in (z - 1, z - 2)
         } - filled_track_ids
 
-        # 4) Merge fallback: only after all eligible z-1/z-2 graphs are filled.
+        # 4) Merge fallback as a separate iterative loop after linking is done.
         if hanging_track_ids:
             LOGGER.info(
                 "semi3d merge bypassed at z=%d because hanging graphs remain: %s",
@@ -470,73 +456,85 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
             recent_active = [
                 tr for tr in active if tr.nodes and tr.nodes[-1].z in (z - 1, z - 2)
             ]
-            for tr, base_node, anchor, gap in assigned:
-                if gap not in (1, 2):
-                    continue
-                best_merge_j = None
-                best_merge_iou_b = float(merge_iou_b_min)
-                for j, n2 in enumerate(current_nodes):
-                    if j in used:
+            merge_round = 0
+            while True:
+                merge_round += 1
+                merge_candidates = []
+                for tr, base_node, anchor, gap in assigned:
+                    if gap not in (1, 2):
                         continue
-                    merge_dist_gate = min(float(merge_dist), 0.75 * link_dist)
-                    local_neighbors = sum(
-                        np.linalg.norm(other.nodes[-1].centroid - n2.centroid) <= (merge_dist_gate * 1.5)
-                        for other in recent_active
-                        if other.track_id != tr.track_id
-                    )
-                    merge_dist_gate /= (1.0 + 0.25 * min(4, local_neighbors))
-                    adaptive_merge_iou_b_min = float(merge_iou_b_min) + (0.05 * min(4, local_neighbors))
-                    if np.linalg.norm(n2.centroid - base_node.centroid) > merge_dist_gate:
-                        continue
-                    # keep attach-first: if this node can still attach to any graph, do not merge it away.
-                    if _has_attachable_graph_for_node(
-                        n2,
-                        active,
-                        max_gap=max_gap,
-                        link_dist=link_dist,
-                        min_iou_a=link_iou,
-                        exclude_track_id=tr.track_id,
-                    ):
-                        continue
-                    iou_b_prev = _node_iou_b(anchor, n2)
-                    iou_b_two = 0.0
-                    if tr.nodes and len(tr.nodes) >= 2:
-                        for old in tr.nodes[:-1][::-1]:
-                            if old.z == (z - 2):
-                                iou_b_two = _node_iou_b(old, n2)
-                                break
-                    iou_b = max(iou_b_prev, iou_b_two)
-                    raw_iou_prev = _node_raw_iou(anchor, n2)
-                    raw_iou_two = 0.0
-                    if tr.nodes and len(tr.nodes) >= 2:
-                        for old in tr.nodes[:-1][::-1]:
-                            if old.z == (z - 2):
-                                raw_iou_two = _node_raw_iou(old, n2)
-                                break
-                    raw_iou = max(raw_iou_prev, raw_iou_two)
-                    alt_best_iou_a = 0.0
-                    for other in recent_active:
-                        if other.track_id == tr.track_id:
+                    for j, n2 in enumerate(current_nodes):
+                        if j in used:
                             continue
-                        alt_metrics = _best_anchor_metrics(other, n2, max_gap=max_gap, depth=3)
-                        if alt_metrics is None:
+                        merge_dist_gate = min(float(merge_dist), 0.75 * link_dist)
+                        local_neighbors = sum(
+                            np.linalg.norm(other.nodes[-1].centroid - n2.centroid) <= (merge_dist_gate * 1.5)
+                            for other in recent_active
+                            if other.track_id != tr.track_id
+                        )
+                        merge_dist_gate /= (1.0 + 0.25 * min(4, local_neighbors))
+                        if np.linalg.norm(n2.centroid - base_node.centroid) > merge_dist_gate:
                             continue
-                        _, _, _, alt_iou_a, _, _ = alt_metrics
-                        alt_best_iou_a = max(alt_best_iou_a, float(alt_iou_a))
+                        if _has_attachable_graph_for_node(
+                            n2,
+                            active,
+                            max_gap=max_gap,
+                            link_dist=link_dist,
+                            min_iou_a=link_iou,
+                            exclude_track_id=tr.track_id,
+                        ):
+                            continue
 
-                    required_iou_b = max(adaptive_merge_iou_b_min, alt_best_iou_a + float(merge_competition_margin))
-                    required_raw_iou = max(0.05, 0.6 * required_iou_b)
-                    if iou_b > max(best_merge_iou_b, required_iou_b) and raw_iou >= required_raw_iou:
-                        best_merge_iou_b = iou_b
-                        best_merge_j = j
-                if best_merge_j is not None:
-                    merged = _merge_nodes([base_node, current_nodes[best_merge_j]])
+                        iou_b_prev = _node_iou_b(anchor, n2)
+                        raw_iou_prev = _node_raw_iou(anchor, n2)
+                        iou_b_two, raw_iou_two = 0.0, 0.0
+                        if tr.nodes and len(tr.nodes) >= 2:
+                            for old in tr.nodes[:-1][::-1]:
+                                if old.z == (z - 2):
+                                    iou_b_two = _node_iou_b(old, n2)
+                                    raw_iou_two = _node_raw_iou(old, n2)
+                                    break
+                        iou_b = max(iou_b_prev, iou_b_two)
+                        raw_iou = max(raw_iou_prev, raw_iou_two)
+
+                        alt_best_iou_a = 0.0
+                        for other in recent_active:
+                            if other.track_id == tr.track_id:
+                                continue
+                            alt_metrics = _best_anchor_metrics(other, n2, max_gap=max_gap, depth=3)
+                            if alt_metrics is None:
+                                continue
+                            alt_anchor, _, _, alt_iou_a, _, _ = alt_metrics
+                            alt_best_iou_a = max(alt_best_iou_a, max(alt_iou_a, _node_raw_iou(alt_anchor, n2)))
+
+                        adaptive_merge_iou_b_min = float(merge_iou_b_min) + (0.05 * min(4, local_neighbors))
+                        required_iou = max(adaptive_merge_iou_b_min, alt_best_iou_a + float(merge_competition_margin))
+                        required_raw_iou = max(0.05, 0.6 * required_iou)
+                        if iou_b < required_iou or raw_iou < required_raw_iou:
+                            continue
+                        merge_score = min(iou_b, raw_iou)
+                        merge_candidates.append((merge_score, tr, anchor, base_node, j))
+
+                if not merge_candidates:
+                    break
+
+                merge_candidates.sort(reverse=True, key=lambda x: x[0])
+                consumed_nodes = set()
+                merged_any = False
+                for _, tr, anchor, base_node, node_idx in merge_candidates:
+                    if node_idx in used or node_idx in consumed_nodes:
+                        continue
+                    merged = _merge_nodes([base_node, current_nodes[node_idx]])
                     tr.nodes[-1] = merged
                     iou_a, _ = _node_overlap_scores(anchor, merged)
-                    tr.links[-1] = iou_a
-                    used.add(best_merge_j)
+                    raw_iou = _node_raw_iou(anchor, merged)
+                    tr.links[-1] = max(iou_a, raw_iou)
+                    used.add(node_idx)
+                    consumed_nodes.add(node_idx)
+                    merged_any = True
+                if not merged_any:
+                    break
 
-        # Apply skip bookkeeping for phase1/phase2 assignments.
         for tr, _, _, gap in assigned:
             skips = max(0, gap - 1)
             tr.gap_bridges += skips
@@ -563,13 +561,13 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                             {
                                 "track_id": tid,
                                 "anchor_z": az,
-                                "gap": gap,
-                                "dist": round(dist, 4),
-                                "inter": inter,
-                                "iou_a": round(iou_a, 6),
-                                "iou_b": round(iou_b, 6),
+                                "gap": gp,
+                                "intersection": inter,
+                                "iou_a": float(ia),
+                                "iou_b": float(ib),
+                                "dist": float(d),
                             }
-                            for dist, tid, az, gap, inter, iou_a, iou_b in top
+                            for d, tid, az, gp, inter, ia, ib in top
                         ],
                     )
                 else:
