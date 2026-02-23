@@ -295,12 +295,9 @@ def _collect_track_candidates(ai, tr, z, current_nodes, used, candidate_idx, lin
 
 
 def _compact_track_history(active: List[Track], keep_recent: int = 2):
-    for tr in active:
-        if len(tr.nodes) <= keep_recent:
-            continue
-        for n in tr.nodes[:-keep_recent]:
-            if n.mask_crop is not None:
-                n.compact()
+    # Disabled: compaction can invalidate later overlap/merge computations that need mask crops.
+    # Keep full crops to avoid "slice_mask required for compacted node" runtime failures.
+    return
 
 
 def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tolerance=0.6,
@@ -449,7 +446,6 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                     node = cur_node
                     iou = cur_iou
 
-            last.compact()
             tr.nodes.append(node)
             tr.links.append(iou)
             skips = max(0, gap - 1)
@@ -531,7 +527,6 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                         tr.links[-1] = _node_iou(tr.nodes[-2], merged)
                 else:
                     iou = _node_iou(last, node)
-                    last.compact()
                     tr.nodes.append(node)
                     tr.links.append(iou)
                     skips = max(0, gap - 1)
