@@ -310,6 +310,36 @@ def test_merge_chooses_single_highest_iou_b_above_threshold():
     # merged with only the best IoU_B candidate (id=3), recovering full 10x10 anchor footprint
     assert tracks[0].nodes[-1].area == 100
 
+
+def test_merge_requires_higher_iou_b_threshold_and_distance_gate():
+    s0 = np.zeros((80, 80), dtype=np.int32)
+    s1 = np.zeros((80, 80), dtype=np.int32)
+
+    s0[20:30, 20:30] = 1
+    s1[20:30, 20:26] = 2
+    # overlap with anchor is only 10x2 => IoU_B = 20/100 = 0.2, not strictly above threshold
+    s1[20:30, 26:36] = 3
+
+    tracks = build_association_tracks([s0, s1], link_iou=0.0, link_dist=18.0, max_gap=2, merge_dist=24.0)
+    # no merge should happen at equality to threshold (must be strictly > 0.2)
+    assert len(tracks) == 2
+    assert sorted(len(t.nodes) for t in tracks) == [1, 2]
+
+
+def test_merge_rejects_far_candidate_even_with_high_iou_b():
+    s0 = np.zeros((120, 120), dtype=np.int32)
+    s1 = np.zeros((120, 120), dtype=np.int32)
+
+    s0[20:30, 20:30] = 1
+    s1[20:30, 20:30] = 2
+    # perfect IoU_B against previous anchor but placed far from base node centroid
+    s1[50:60, 50:60] = 3
+
+    tracks = build_association_tracks([s0, s1], link_iou=0.0, link_dist=8.0, max_gap=2, merge_dist=40.0)
+    # merge distance gate should block this merge; far node becomes separate track
+    assert len(tracks) == 2
+    assert sorted(len(t.nodes) for t in tracks) == [1, 2]
+
 def test_training_loader_accepts_seg_npy(monkeypatch):
     fake_dir = "/data"
 

@@ -279,8 +279,29 @@ def _gpu_prefilter_candidates(active, current_nodes, link_dist, size_tolerance):
         return None
 
 
+def _compute_pairwise_distances(active_tracks: List[Track], nodes: List[InstanceNode], use_gpu: bool):
+    if len(active_tracks) == 0 or len(nodes) == 0:
+        return np.zeros((len(active_tracks), len(nodes)), dtype=np.float32)
+
+    a_cent = np.stack([t.nodes[-1].centroid for t in active_tracks]).astype(np.float32)
+    c_cent = np.stack([n.centroid for n in nodes]).astype(np.float32)
+    if not use_gpu:
+        return np.linalg.norm(a_cent[:, None, :] - c_cent[None, :, :], axis=2).astype(np.float32)
+
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return np.linalg.norm(a_cent[:, None, :] - c_cent[None, :, :], axis=2).astype(np.float32)
+        A = torch.from_numpy(a_cent).to("cuda")
+        C = torch.from_numpy(c_cent).to("cuda")
+        return torch.cdist(A, C).detach().cpu().numpy().astype(np.float32)
+    except Exception:
+        return np.linalg.norm(a_cent[:, None, :] - c_cent[None, :, :], axis=2).astype(np.float32)
+
+
 def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tolerance=0.6,
-                             max_gap=3, gpu_prefilter=False, merge_dist=12.0):
+                             max_gap=3, gpu_prefilter=False, merge_dist=12.0, merge_iou_b_min=0.2):
     tracks: List[Track] = []
     active: List[Track] = []
     next_track_id = 1
@@ -302,39 +323,36 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
         gpu_candidates = _gpu_prefilter_candidates(active, current_nodes, link_dist, size_tolerance) if gpu_prefilter else None
         assigned = []
 
-        # 1) Primary linking: ONLY previous slice anchors (z-1), rank by IoU_A then distance.
-        # Make this pass permissive to reduce missed attachments.
-        for ai, tr in enumerate(active):
+        # 1) Primary linking: ONLY previous slice anchors (z-1), globally rank pairings by IoU_A then distance.
+        # This avoids per-track greedy assignment and improves matching consistency.
+        prev_tracks = [tr for tr in active if tr.nodes and tr.nodes[-1].z == (z - 1)]
+        active_pos = {id(tr): i for i, tr in enumerate(active)}
+        pairwise_dist = _compute_pairwise_distances(prev_tracks, current_nodes, use_gpu=gpu_prefilter)
+        pair_candidates = []
+        for ti, tr in enumerate(prev_tracks):
             last = tr.nodes[-1]
-            if last.z != (z - 1):
+            candidate_idx = gpu_candidates.get(active_pos[id(tr)], []) if gpu_candidates is not None else _query_neighbors(last, grid, cs)
+            widened = [ci for ci in range(len(current_nodes)) if pairwise_dist[ti, ci] <= (link_dist * 2.0)]
+            for ci in set(candidate_idx).union(widened):
+                dist = float(pairwise_dist[ti, ci])
+                if dist > (link_dist * 2.0):
+                    continue
+                node = current_nodes[ci]
+                iou_a, _ = _node_overlap_scores(last, node)
+                pair_candidates.append((iou_a, -dist, ti, ci, last))
+
+        pair_candidates.sort(reverse=True)
+        used_prev_tracks = set()
+        for iou_a, neg_dist, ti, ci, anchor in pair_candidates:
+            if ti in used_prev_tracks or ci in used:
                 continue
-            candidate_idx = gpu_candidates.get(ai, []) if gpu_candidates is not None else _query_neighbors(last, grid, cs)
-            best = None
-
-            def _scan(indices, dist_factor=1.0):
-                nonlocal best
-                dist_cap = link_dist * dist_factor
-                for i in indices:
-                    if i in used:
-                        continue
-                    node = current_nodes[i]
-                    dist = float(np.linalg.norm(node.centroid - last.centroid))
-                    if dist > dist_cap:
-                        continue
-                    iou_a, _ = _node_overlap_scores(last, node)
-                    if best is None or (iou_a > best[2]) or (iou_a == best[2] and dist < best[3]):
-                        best = (i, node, iou_a, dist, last, 1)
-
-            _scan(candidate_idx, dist_factor=1.5)
-            if best is None:
-                _scan(range(len(current_nodes)), dist_factor=2.0)
-
-            if best is not None:
-                idx, node, iou_a, _, anchor, gap = best
-                tr.nodes.append(node)
-                tr.links.append(iou_a)
-                assigned.append((tr, node, anchor, gap))
-                used.add(idx)
+            tr = prev_tracks[ti]
+            node = current_nodes[ci]
+            tr.nodes.append(node)
+            tr.links.append(iou_a)
+            assigned.append((tr, node, anchor, 1))
+            used.add(ci)
+            used_prev_tracks.add(ti)
 
         # 2) Leftovers attach using two-slices-before anchors (z-2) for tracks absent at z-1.
         for i, node in enumerate(current_nodes):
@@ -375,11 +393,12 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                 if gap not in (1, 2):
                     continue
                 best_merge_j = None
-                best_merge_iou_b = 0.1
+                best_merge_iou_b = float(merge_iou_b_min)
                 for j, n2 in enumerate(current_nodes):
                     if j in used:
                         continue
-                    if np.linalg.norm(n2.centroid - base_node.centroid) > merge_dist:
+                    merge_dist_gate = min(float(merge_dist), 1.5 * link_dist)
+                    if np.linalg.norm(n2.centroid - base_node.centroid) > merge_dist_gate:
                         continue
                     # keep attach-first: if this node can still attach to any graph, do not merge it away.
                     if _has_attachable_graph_for_node(n2, active, max_gap=max_gap, link_dist=link_dist, exclude_track_id=tr.track_id):
