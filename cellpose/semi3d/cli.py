@@ -265,6 +265,8 @@ def _run_stage2(args):
         max_gap=args.max_gap,
         gpu_prefilter=args.link_gpu_prefilter,
         merge_dist=args.merge_dist,
+        merge_iou_b_min=args.merge_iou_b_min,
+        merge_competition_margin=args.merge_competition_margin,
         show_progress=True,
     )
 
@@ -356,6 +358,8 @@ def run_from_cellpose_args(args):
             memmap_stage2_inputs=args.semi3d_memmap_stage2_inputs,
             link_gpu_prefilter=args.semi3d_link_gpu_prefilter,
             merge_dist=args.semi3d_merge_dist,
+            merge_iou_b_min=args.semi3d_merge_iou_b_min,
+            merge_competition_margin=args.semi3d_merge_competition_margin,
             allow_overlap_recon=args.semi3d_allow_overlap_recon,
             recon_min_free_fraction=args.semi3d_recon_min_free_fraction,
             save_debug_tiff=args.semi3d_save_debug_tiff,
@@ -427,6 +431,8 @@ def run_from_cellpose_args(args):
             memmap_stage2_inputs=args.semi3d_memmap_stage2_inputs,
             link_gpu_prefilter=args.semi3d_link_gpu_prefilter,
             merge_dist=args.semi3d_merge_dist,
+            merge_iou_b_min=args.semi3d_merge_iou_b_min,
+            merge_competition_margin=args.semi3d_merge_competition_margin,
             allow_overlap_recon=args.semi3d_allow_overlap_recon,
             recon_min_free_fraction=args.semi3d_recon_min_free_fraction,
             save_debug_tiff=args.semi3d_save_debug_tiff,

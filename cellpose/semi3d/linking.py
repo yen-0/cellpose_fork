@@ -247,6 +247,7 @@ def _has_attachable_graph_for_node(node: InstanceNode,
                                   active_tracks: List[Track],
                                   max_gap: int,
                                   link_dist: float,
+                                  min_iou_a: float,
                                   exclude_track_id: Optional[int] = None) -> bool:
     """Return True if `node` can still be attached to another existing track."""
     for tr in active_tracks:
@@ -255,7 +256,9 @@ def _has_attachable_graph_for_node(node: InstanceNode,
         anchor_metrics = _best_anchor_metrics(tr, node, max_gap=max_gap, depth=3)
         if anchor_metrics is None:
             continue
-        _, gap, inter, _, _, dist = anchor_metrics
+        _, gap, inter, iou_a, _, dist = anchor_metrics
+        if iou_a < float(min_iou_a):
+            continue
         dist_gate = link_dist * (1.0 + min(1.0, 0.5 * (gap - 1)))
         radius_gate = 2.0 * float(max(1, node.area))
         if inter > 0 or dist <= max(dist_gate, radius_gate):
@@ -307,7 +310,8 @@ def _compute_pairwise_distances(active_tracks: List[Track], nodes: List[Instance
 
 
 def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tolerance=0.6,
-                             max_gap=3, gpu_prefilter=False, merge_dist=12.0, merge_iou_b_min=0.2,
+                             max_gap=3, gpu_prefilter=False, merge_dist=12.0, merge_iou_b_min=0.35,
+                             merge_competition_margin=0.1,
                              show_progress=False):
     tracks: List[Track] = []
     active: List[Track] = []
@@ -347,6 +351,8 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                     continue
                 node = current_nodes[ci]
                 iou_a, _ = _node_overlap_scores(last, node)
+                if iou_a < float(link_iou):
+                    continue
                 pair_candidates.append((iou_a, -dist, ti, ci, last))
 
         pair_candidates.sort(reverse=True)
@@ -375,6 +381,8 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                 if dist > (link_dist * 2.0):
                     continue
                 iou_a, _ = _node_overlap_scores(last, node)
+                if iou_a < float(link_iou):
+                    continue
                 if best is None or (iou_a > best[2]) or (iou_a == best[2] and dist < best[3]):
                     best = (tr, last, iou_a, dist)
             if best is not None:
@@ -384,52 +392,7 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                 assigned.append((tr, node, anchor, 2))
                 used.add(i)
 
-        filled_track_ids = {tr.track_id for tr, _, _, _ in assigned}
-        hanging_track_ids = {
-            tr.track_id for tr in active if tr.nodes and tr.nodes[-1].z in (z - 1, z - 2)
-        } - filled_track_ids
-
-        # 3) Merge fallback: only after all eligible z-1/z-2 graphs are filled.
-        if hanging_track_ids:
-            LOGGER.info(
-                "semi3d merge bypassed at z=%d because hanging graphs remain: %s",
-                z,
-                sorted(hanging_track_ids),
-            )
-        else:
-            for tr, base_node, anchor, gap in assigned:
-                if gap not in (1, 2):
-                    continue
-                best_merge_j = None
-                best_merge_iou_b = float(merge_iou_b_min)
-                for j, n2 in enumerate(current_nodes):
-                    if j in used:
-                        continue
-                    merge_dist_gate = min(float(merge_dist), 1.5 * link_dist)
-                    if np.linalg.norm(n2.centroid - base_node.centroid) > merge_dist_gate:
-                        continue
-                    # keep attach-first: if this node can still attach to any graph, do not merge it away.
-                    if _has_attachable_graph_for_node(n2, active, max_gap=max_gap, link_dist=link_dist, exclude_track_id=tr.track_id):
-                        continue
-                    iou_b_prev = _node_iou_b(anchor, n2)
-                    iou_b_two = 0.0
-                    if tr.nodes and len(tr.nodes) >= 2:
-                        for old in tr.nodes[:-1][::-1]:
-                            if old.z == (z - 2):
-                                iou_b_two = _node_iou_b(old, n2)
-                                break
-                    iou_b = max(iou_b_prev, iou_b_two)
-                    if iou_b > best_merge_iou_b:
-                        best_merge_iou_b = iou_b
-                        best_merge_j = j
-                if best_merge_j is not None:
-                    merged = _merge_nodes([base_node, current_nodes[best_merge_j]])
-                    tr.nodes[-1] = merged
-                    iou_a, _ = _node_overlap_scores(anchor, merged)
-                    tr.links[-1] = iou_a
-                    used.add(best_merge_j)
-
-        # 4) If still unmatched, try any remaining graph via nearest/overlap before new track.
+        # 3) If still unmatched, try any remaining graph via nearest/overlap before merge/new track.
         leftovers = [i for i in range(len(current_nodes)) if i not in used]
         for i in leftovers:
             node = current_nodes[i]
@@ -452,6 +415,82 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
             if skips > 0:
                 best_tr.gap_hist[skips] = best_tr.gap_hist.get(skips, 0) + 1
             used.add(i)
+
+        filled_track_ids = {tr.track_id for tr, _, _, _ in assigned}
+        filled_track_ids.update(
+            tr.track_id for tr in active if tr.nodes and tr.nodes[-1].z == z
+        )
+        hanging_track_ids = {
+            tr.track_id for tr in active if tr.nodes and tr.nodes[-1].z in (z - 1, z - 2)
+        } - filled_track_ids
+
+        # 4) Merge fallback: only after all eligible z-1/z-2 graphs are filled.
+        if hanging_track_ids:
+            LOGGER.info(
+                "semi3d merge bypassed at z=%d because hanging graphs remain: %s",
+                z,
+                sorted(hanging_track_ids),
+            )
+        else:
+            recent_active = [
+                tr for tr in active if tr.nodes and tr.nodes[-1].z in (z - 1, z - 2)
+            ]
+            for tr, base_node, anchor, gap in assigned:
+                if gap not in (1, 2):
+                    continue
+                best_merge_j = None
+                best_merge_iou_b = float(merge_iou_b_min)
+                for j, n2 in enumerate(current_nodes):
+                    if j in used:
+                        continue
+                    merge_dist_gate = min(float(merge_dist), 1.5 * link_dist)
+                    local_neighbors = sum(
+                        np.linalg.norm(other.nodes[-1].centroid - n2.centroid) <= (merge_dist_gate * 1.5)
+                        for other in recent_active
+                        if other.track_id != tr.track_id
+                    )
+                    merge_dist_gate /= (1.0 + 0.25 * min(4, local_neighbors))
+                    adaptive_merge_iou_b_min = float(merge_iou_b_min) + (0.05 * min(4, local_neighbors))
+                    if np.linalg.norm(n2.centroid - base_node.centroid) > merge_dist_gate:
+                        continue
+                    # keep attach-first: if this node can still attach to any graph, do not merge it away.
+                    if _has_attachable_graph_for_node(
+                        n2,
+                        active,
+                        max_gap=max_gap,
+                        link_dist=link_dist,
+                        min_iou_a=link_iou,
+                        exclude_track_id=tr.track_id,
+                    ):
+                        continue
+                    iou_b_prev = _node_iou_b(anchor, n2)
+                    iou_b_two = 0.0
+                    if tr.nodes and len(tr.nodes) >= 2:
+                        for old in tr.nodes[:-1][::-1]:
+                            if old.z == (z - 2):
+                                iou_b_two = _node_iou_b(old, n2)
+                                break
+                    iou_b = max(iou_b_prev, iou_b_two)
+                    alt_best_iou_a = 0.0
+                    for other in recent_active:
+                        if other.track_id == tr.track_id:
+                            continue
+                        alt_metrics = _best_anchor_metrics(other, n2, max_gap=max_gap, depth=3)
+                        if alt_metrics is None:
+                            continue
+                        _, _, _, alt_iou_a, _, _ = alt_metrics
+                        alt_best_iou_a = max(alt_best_iou_a, float(alt_iou_a))
+
+                    required_iou_b = max(adaptive_merge_iou_b_min, alt_best_iou_a + float(merge_competition_margin))
+                    if iou_b > max(best_merge_iou_b, required_iou_b):
+                        best_merge_iou_b = iou_b
+                        best_merge_j = j
+                if best_merge_j is not None:
+                    merged = _merge_nodes([base_node, current_nodes[best_merge_j]])
+                    tr.nodes[-1] = merged
+                    iou_a, _ = _node_overlap_scores(anchor, merged)
+                    tr.links[-1] = iou_a
+                    used.add(best_merge_j)
 
         # Apply skip bookkeeping for phase1/phase2 assignments.
         for tr, _, _, gap in assigned:
