@@ -255,7 +255,7 @@ def _compact_track_history(active: List[Track], keep_recent: int = 2):
 
 def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tolerance=0.6,
                              max_gap=3, gpu_prefilter=False, merge_dist=12.0, link_workers=1,
-                             return_debug=False, force_attach_min_area=25):
+                             return_debug=False, force_attach_min_area=25, anchor_first_slice=True):
     tracks: List[Track] = []
     active: List[Track] = []
     next_track_id = 1
@@ -276,6 +276,27 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                 "reason": "",
                 "score": None,
             })
+
+        if z == 0:
+            for i, node in enumerate(current_nodes):
+                tr = Track(track_id=next_track_id, nodes=[node])
+                next_track_id += 1
+                tracks.append(tr)
+                active.append(tr)
+                used.add(i)
+                node_debug[i].update({
+                    "track_id": int(tr.track_id),
+                    "status": "anchor",
+                    "reason": "initialized_from_first_slice",
+                    "score": None,
+                })
+            if return_debug:
+                debug_records.append({
+                    "z": int(z),
+                    "nodes": node_debug,
+                    "tracks": [{"track_id": int(t.track_id), "last_z": int(t.nodes[-1].z), "status": "anchor"} for t in active],
+                })
+            continue
 
         grid, cs = _build_spatial_grid(current_nodes, link_dist)
         gpu_candidates = _gpu_prefilter_candidates(active, current_nodes, link_dist, size_tolerance, grid=grid, cell_size=cs) if gpu_prefilter else None
@@ -332,30 +353,7 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
             tr = active[ai]
             last = tr.nodes[-1]
             node = current_nodes[idx]
-            candidate_idx = gpu_candidates.get(ai, []) if gpu_candidates is not None else _query_neighbors(last, grid, cs)
-
-            merge_nodes = [node]
             merged_idx = []
-            if gap == 1:
-                base_ar = min(last.area, node.area) / max(last.area, node.area)
-                for j in candidate_idx:
-                    if j in used or j == idx:
-                        continue
-                    n2 = current_nodes[j]
-                    if np.linalg.norm(n2.centroid - node.centroid) <= (merge_dist * 1.4):
-                        test = _merge_nodes([node, n2])
-                        merged_iou = _node_iou(last, test)
-                        merged_ar = min(last.area, test.area) / max(last.area, test.area)
-                        if merged_iou >= iou - 0.05 or merged_ar >= max(base_ar + 0.10, size_tolerance * 0.75):
-                            merge_nodes.append(n2)
-                            merged_idx.append(j)
-                            used.add(j)
-                            node = test
-                            iou = merged_iou
-                            base_ar = merged_ar
-                if len(merge_nodes) > 1:
-                    node = _merge_nodes(merge_nodes)
-                    iou = _node_iou(last, node)
 
             last.compact()
             tr.nodes.append(node)
@@ -426,6 +424,16 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
 
         for i, node in enumerate(current_nodes):
             if i not in used:
+                if anchor_first_slice:
+                    reason = "omitted_small_unmatched" if node.area < force_attach_min_area else "omitted_unmatched_to_first_slice"
+                    node_debug[i].update({
+                        "track_id": None,
+                        "status": "omitted",
+                        "reason": reason,
+                        "score": best_score_by_node.get(i, None),
+                    })
+                    continue
+
                 tr = Track(track_id=next_track_id, nodes=[node])
                 next_track_id += 1
                 tracks.append(tr)

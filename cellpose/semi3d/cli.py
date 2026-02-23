@@ -84,7 +84,7 @@ def _extract_debug_maps(flows):
 
 
 def _defog_probability(prob_slice, bg_percentile=2.0, hi_percentile=98.0, gamma=0.85,
-                       bg_sigma=50.0, boundary_sigma=1.2, boundary_strength=0.35):
+                       bg_sigma=50.0, boundary_sigma=0.8, boundary_strength=0.35):
     p = np.asarray(prob_slice, dtype=np.float32)
     if p.ndim > 2:
         p = np.squeeze(p)
@@ -146,7 +146,7 @@ def _run_stage1(args):
                 hi_percentile=getattr(args, "stage1_prob_hi_percentile", 98.0),
                 gamma=getattr(args, "stage1_prob_gamma", 0.85),
                 bg_sigma=getattr(args, "stage1_prob_bg_sigma", 50.0),
-                boundary_sigma=getattr(args, "stage1_prob_boundary_sigma", 1.2),
+                boundary_sigma=getattr(args, "stage1_prob_boundary_sigma", 0.8),
                 boundary_strength=getattr(args, "stage1_prob_boundary_strength", 0.35),
             )
 
@@ -225,6 +225,9 @@ def _save_link_debug_overlay(per_slice_masks, debug_records, output_dir):
         "omitted_by_higher_score_or_track_claim": 4,
         "no_valid_link_started_new_track": 5,
         "large_leftover_attached_to_nearest_track": 6,
+        "initialized_from_first_slice": 7,
+        "omitted_unmatched_to_first_slice": 8,
+        "omitted_small_unmatched": 9,
     }
     overlays = []
     reason_stack = []
@@ -264,6 +267,16 @@ def _save_link_debug_overlay(per_slice_masks, debug_records, output_dir):
             elif status == "forced_attach":
                 color = np.array([0, 255, 255], dtype=np.uint8)
                 reason_val = code_map["large_leftover_attached_to_nearest_track"]
+            elif status == "anchor":
+                color = np.array([120, 255, 120], dtype=np.uint8)
+                reason_val = code_map["initialized_from_first_slice"]
+            elif status == "omitted":
+                if reason == "omitted_small_unmatched":
+                    color = np.array([120, 120, 120], dtype=np.uint8)
+                    reason_val = code_map["omitted_small_unmatched"]
+                else:
+                    color = np.array([40, 40, 200], dtype=np.uint8)
+                    reason_val = code_map["omitted_unmatched_to_first_slice"]
             else:
                 color = np.array([100, 100, 255], dtype=np.uint8)
                 reason_val = code_map["no_valid_link_started_new_track"]
@@ -319,6 +332,7 @@ def _run_stage2(args):
         link_workers=args.link_workers,
         return_debug=getattr(args, "save_link_debug", False),
         force_attach_min_area=getattr(args, "force_attach_min_area", 25),
+        anchor_first_slice=getattr(args, "anchor_first_slice", True),
     )
     if getattr(args, "save_link_debug", False):
         tracks, link_debug = link_out
@@ -412,6 +426,7 @@ def run_from_cellpose_args(args):
             merge_dist=args.semi3d_merge_dist,
             link_workers=args.semi3d_link_workers,
             force_attach_min_area=args.semi3d_force_attach_min_area,
+            anchor_first_slice=not args.semi3d_disable_anchor_first_slice,
             allow_overlap_recon=args.semi3d_allow_overlap_recon,
             recon_min_free_fraction=args.semi3d_recon_min_free_fraction,
             save_debug_tiff=args.semi3d_save_debug_tiff,
@@ -487,6 +502,7 @@ def run_from_cellpose_args(args):
             merge_dist=args.semi3d_merge_dist,
             link_workers=args.semi3d_link_workers,
             force_attach_min_area=args.semi3d_force_attach_min_area,
+            anchor_first_slice=not args.semi3d_disable_anchor_first_slice,
             allow_overlap_recon=args.semi3d_allow_overlap_recon,
             recon_min_free_fraction=args.semi3d_recon_min_free_fraction,
             save_debug_tiff=args.semi3d_save_debug_tiff,

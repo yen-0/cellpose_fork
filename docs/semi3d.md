@@ -147,6 +147,7 @@ Useful flags:
 - `--semi3d_link_gpu_prefilter` (GPU proposal of local (neighbor-only) top-K pair candidates before exact scoring/assignment)
 - `--semi3d_merge_dist` (merge split detections of the same cell within a slice)
 - `--semi3d_force_attach_min_area` (force-attach leftover cells above this area to nearest viable track)
+- `--semi3d_disable_anchor_first_slice` (by default tracks are anchored to z=0; set this to allow new tracks later)
 - `--semi3d_border_exclusion_px`
 - `--semi3d_fill_edges` (fills first/last slices too)
 - `--semi3d_allow_overlap_recon` (disable occupancy-aware reconstruction blocking)
@@ -207,7 +208,7 @@ cellpose --semi3d_stage1 \
   --semi3d_pretrained_model cpsam \
   --semi3d_stage1_cellprob_threshold -2.0 \
   --semi3d_stage1_prob_bg_sigma 50 --semi3d_stage1_prob_bg_percentile 2 --semi3d_stage1_prob_hi_percentile 98 --semi3d_stage1_prob_gamma 0.85 \
-  --semi3d_stage1_prob_boundary_sigma 1.2 --semi3d_stage1_prob_boundary_strength 0.35 \
+  --semi3d_stage1_prob_boundary_sigma 0.8 --semi3d_stage1_prob_boundary_strength 0.35 \
   --use_gpu --verbose
 ```
 
