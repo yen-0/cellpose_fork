@@ -134,6 +134,33 @@ def _node_iou(node_a: InstanceNode, node_b: InstanceNode, slice_mask_a: Optional
     return float(inter / union) if union > 0 else 0.0
 
 
+
+
+def _node_raw_iou(node_a: InstanceNode, node_b: InstanceNode,
+                  slice_mask_a: Optional[np.ndarray] = None,
+                  slice_mask_b: Optional[np.ndarray] = None) -> float:
+    """Raw binary-mask IoU on true instance pixels (not bbox IoU)."""
+    ay0, ay1, ax0, ax1 = node_a.bbox
+    by0, by1, bx0, bx1 = node_b.bbox
+    y0, y1 = min(ay0, by0), max(ay1, by1)
+    x0, x1 = min(ax0, bx0), max(ax1, bx1)
+
+    a_crop = _node_mask_crop(node_a, slice_mask_a)
+    b_crop = _node_mask_crop(node_b, slice_mask_b)
+
+    a_full = np.zeros((y1 - y0, x1 - x0), dtype=bool)
+    b_full = np.zeros((y1 - y0, x1 - x0), dtype=bool)
+    a_full[ay0 - y0:ay1 - y0, ax0 - x0:ax1 - x0] = a_crop
+    b_full[by0 - y0:by1 - y0, bx0 - x0:bx1 - x0] = b_crop
+
+    inter = np.logical_and(a_full, b_full).sum()
+    union = np.logical_or(a_full, b_full).sum()
+    return float(inter / union) if union > 0 else 0.0
+
+
+def _distance_gate_from_area(area: int, link_dist: float, scale: float = 2.0) -> float:
+    """Area-aware distance gate that grows sub-linearly with object size."""
+    return max(float(link_dist), scale * np.sqrt(float(max(1, area))))
 def _polygon_similarity(node_a: InstanceNode, node_b: InstanceNode) -> float:
     # contour-based similarity, independent of bbox-overlap hard gate
     if not node_a.contours or not node_b.contours:
@@ -256,12 +283,15 @@ def _has_attachable_graph_for_node(node: InstanceNode,
         anchor_metrics = _best_anchor_metrics(tr, node, max_gap=max_gap, depth=3)
         if anchor_metrics is None:
             continue
-        _, gap, inter, iou_a, _, dist = anchor_metrics
+        anchor, gap, inter, iou_a, _, dist = anchor_metrics
         if iou_a < float(min_iou_a):
             continue
+        raw_iou = _node_raw_iou(anchor, node)
+        if raw_iou < (0.5 * float(min_iou_a)):
+            continue
         dist_gate = link_dist * (1.0 + min(1.0, 0.5 * (gap - 1)))
-        radius_gate = 2.0 * float(max(1, node.area))
-        if inter > 0 or dist <= max(dist_gate, radius_gate):
+        area_gate = _distance_gate_from_area(node.area, link_dist, scale=2.0)
+        if inter > 0 or dist <= min(1.5 * dist_gate, area_gate):
             return True
     return False
 
@@ -351,13 +381,14 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                     continue
                 node = current_nodes[ci]
                 iou_a, _ = _node_overlap_scores(last, node)
-                if iou_a < float(link_iou):
+                raw_iou = _node_raw_iou(last, node)
+                if iou_a < float(link_iou) and raw_iou < float(link_iou):
                     continue
-                pair_candidates.append((iou_a, -dist, ti, ci, last))
+                pair_candidates.append((max(iou_a, raw_iou), iou_a, -dist, ti, ci, last))
 
         pair_candidates.sort(reverse=True)
         used_prev_tracks = set()
-        for iou_a, neg_dist, ti, ci, anchor in pair_candidates:
+        for score, iou_a, neg_dist, ti, ci, anchor in pair_candidates:
             if ti in used_prev_tracks or ci in used:
                 continue
             tr = prev_tracks[ti]
@@ -381,10 +412,12 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                 if dist > (link_dist * 2.0):
                     continue
                 iou_a, _ = _node_overlap_scores(last, node)
-                if iou_a < float(link_iou):
+                raw_iou = _node_raw_iou(last, node)
+                score = max(iou_a, raw_iou)
+                if score < float(link_iou):
                     continue
-                if best is None or (iou_a > best[2]) or (iou_a == best[2] and dist < best[3]):
-                    best = (tr, last, iou_a, dist)
+                if best is None or (score > best[2]) or (score == best[2] and dist < best[3]):
+                    best = (tr, last, score, dist)
             if best is not None:
                 tr, anchor, iou_a, _ = best
                 tr.nodes.append(node)
@@ -402,8 +435,10 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                 if anchor_metrics is None:
                     continue
                 anchor, gap, inter, iou_a, _, dist = anchor_metrics
-                if inter <= 0 and dist > 2.0 * float(max(1, node.area)):
-                    continue
+                if inter <= 0:
+                    area_gate = _distance_gate_from_area(node.area, link_dist, scale=2.0)
+                    if dist > area_gate:
+                        continue
                 if (iou_a > best_iou) or (iou_a == best_iou and (best_dist is None or dist < best_dist)):
                     best_tr, best_anchor, best_gap, best_iou, best_dist = tr, anchor, gap, iou_a, dist
             if best_tr is None:
@@ -443,7 +478,7 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                 for j, n2 in enumerate(current_nodes):
                     if j in used:
                         continue
-                    merge_dist_gate = min(float(merge_dist), 1.5 * link_dist)
+                    merge_dist_gate = min(float(merge_dist), 0.75 * link_dist)
                     local_neighbors = sum(
                         np.linalg.norm(other.nodes[-1].centroid - n2.centroid) <= (merge_dist_gate * 1.5)
                         for other in recent_active
@@ -471,6 +506,14 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                                 iou_b_two = _node_iou_b(old, n2)
                                 break
                     iou_b = max(iou_b_prev, iou_b_two)
+                    raw_iou_prev = _node_raw_iou(anchor, n2)
+                    raw_iou_two = 0.0
+                    if tr.nodes and len(tr.nodes) >= 2:
+                        for old in tr.nodes[:-1][::-1]:
+                            if old.z == (z - 2):
+                                raw_iou_two = _node_raw_iou(old, n2)
+                                break
+                    raw_iou = max(raw_iou_prev, raw_iou_two)
                     alt_best_iou_a = 0.0
                     for other in recent_active:
                         if other.track_id == tr.track_id:
@@ -482,7 +525,8 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                         alt_best_iou_a = max(alt_best_iou_a, float(alt_iou_a))
 
                     required_iou_b = max(adaptive_merge_iou_b_min, alt_best_iou_a + float(merge_competition_margin))
-                    if iou_b > max(best_merge_iou_b, required_iou_b):
+                    required_raw_iou = max(0.05, 0.6 * required_iou_b)
+                    if iou_b > max(best_merge_iou_b, required_iou_b) and raw_iou >= required_raw_iou:
                         best_merge_iou_b = iou_b
                         best_merge_j = j
                 if best_merge_j is not None:
