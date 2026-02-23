@@ -79,6 +79,21 @@ def test_split_into_two_components_merges_for_same_track():
     assert tracks[0].nodes[-1].area >= 60
 
 
+
+
+def test_split_into_three_components_merges_for_same_track():
+    s0 = np.zeros((60, 60), dtype=np.int32)
+    s1 = np.zeros((60, 60), dtype=np.int32)
+    s0[20:32, 20:32] = 1
+    s1[20:24, 20:32] = 2
+    s1[24:28, 20:32] = 3
+    s1[28:32, 20:32] = 4
+
+    tracks = build_association_tracks([s0, s1], link_iou=0.0, link_dist=24.0, max_gap=2)
+    assert len(tracks) == 1
+    assert len(tracks[0].nodes) == 2
+    assert tracks[0].nodes[-1].area >= 120
+
 def test_closest_leftover_can_link_without_overlap():
     s0 = np.zeros((48, 48), dtype=np.int32)
     s1 = np.zeros((48, 48), dtype=np.int32)
@@ -88,6 +103,24 @@ def test_closest_leftover_can_link_without_overlap():
     tracks = build_association_tracks([s0, s1], link_iou=0.2, link_dist=16.0, max_gap=2)
     assert len(tracks) == 1
     assert len(tracks[0].nodes) == 2
+
+
+def test_no_leftovers_when_anchor_mode_enabled():
+    s0 = np.zeros((64, 64), dtype=np.int32)
+    s1 = np.zeros((64, 64), dtype=np.int32)
+    s0[10:18, 10:18] = 1
+    s0[35:43, 35:43] = 2
+    # three components in next slice (more than anchors)
+    s1[11:16, 10:18] = 3
+    s1[16:19, 10:18] = 4
+    s1[34:44, 35:43] = 5
+
+    tracks, debug = build_association_tracks([s0, s1], link_iou=0.0, link_dist=26.0, max_gap=2, return_debug=True)
+    assert len(tracks) == 2
+    z1 = debug[1]
+    statuses = [n["status"] for n in z1["nodes"]]
+    assert "omitted" not in statuses
+
 def test_edge_fill_reconstructs_first_and_last_slices():
     s0 = np.zeros((32, 32), dtype=np.int32)
     s1 = np.zeros((32, 32), dtype=np.int32)

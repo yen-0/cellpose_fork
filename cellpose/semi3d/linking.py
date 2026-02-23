@@ -74,6 +74,27 @@ def _node_iou(node_a: InstanceNode, node_b: InstanceNode, slice_mask_a: Optional
     return float(inter / union) if union > 0 else 0.0
 
 
+def _node_overlap_pair(node_prev: InstanceNode, node_cur: InstanceNode):
+    """Return (IoU, overlap_prev, overlap_cur), where overlap_prev uses prev area denominator."""
+    ay0, ay1, ax0, ax1 = node_prev.bbox
+    by0, by1, bx0, bx1 = node_cur.bbox
+    iy0, iy1 = max(ay0, by0), min(ay1, by1)
+    ix0, ix1 = max(ax0, bx0), min(ax1, bx1)
+    if iy0 >= iy1 or ix0 >= ix1:
+        return 0.0, 0.0, 0.0
+
+    a_crop = _node_mask_crop(node_prev)
+    b_crop = _node_mask_crop(node_cur)
+    a_view = a_crop[iy0 - ay0:iy1 - ay0, ix0 - ax0:ix1 - ax0]
+    b_view = b_crop[iy0 - by0:iy1 - by0, ix0 - bx0:ix1 - bx0]
+    inter = float(np.logical_and(a_view, b_view).sum())
+    union = float(node_prev.area + node_cur.area - inter)
+    iou = inter / (union + 1e-6)
+    overlap_prev = inter / (float(node_prev.area) + 1e-6)
+    overlap_cur = inter / (float(node_cur.area) + 1e-6)
+    return float(iou), float(overlap_prev), float(overlap_cur)
+
+
 def _polygon_similarity(node_a: InstanceNode, node_b: InstanceNode) -> float:
     if not node_a.contours or not node_b.contours:
         return 0.0
@@ -201,12 +222,27 @@ def _gpu_prefilter_candidates(active, current_nodes, link_dist, size_tolerance, 
         return None
 
 
+def _track_reference_node(track: Track) -> InstanceNode:
+    """Use a short history to avoid over-shrunk previous mask when scoring next slice."""
+    last = track.nodes[-1]
+    if len(track.nodes) < 2:
+        return last
+    prev = track.nodes[-2]
+    # if current shrank strongly, blend with previous support mask
+    if last.area < 0.88 * prev.area:
+        ref = _merge_nodes([prev, last])
+        ref.z = last.z
+        return ref
+    return last
+
+
 def _collect_track_candidates(ai, tr, z, current_nodes, used, candidate_idx, link_iou,
                               link_dist, size_tolerance, max_gap):
     last = tr.nodes[-1]
     if z - last.z > max_gap:
         return []
 
+    ref = _track_reference_node(tr)
     cand = []
     for i in candidate_idx:
         if i in used:
@@ -216,7 +252,7 @@ def _collect_track_candidates(ai, tr, z, current_nodes, used, candidate_idx, lin
         if gap < 1 or gap > max_gap:
             continue
         dist = float(np.linalg.norm(node.centroid - last.centroid))
-        area_ratio = float(min(last.area, node.area) / max(last.area, node.area))
+        area_ratio = float(min(ref.area, node.area) / max(ref.area, node.area))
         cand.append((i, node, gap, dist, area_ratio))
     if not cand:
         return []
@@ -225,26 +261,35 @@ def _collect_track_candidates(ai, tr, z, current_nodes, used, candidate_idx, lin
     closest_idx = min(cand, key=lambda t: t[3])[0]
     edges = []
     for i, node, gap, dist, area_ratio in cand:
-        dyn_dist = link_dist * (1.35 + min(1.8, 0.80 * (gap - 1)))
+        dyn_dist = link_dist * (1.45 + min(2.2, 0.95 * (gap - 1)))
         if dist > dyn_dist and i != closest_idx:
             continue
 
-        # area is a relative soft constraint; keep it permissive for sparse/closest leftovers.
-        area_floor = size_tolerance * 0.30 * (1.0 - min(0.45, 0.15 * (gap - 1)))
+        # area stays relative and soft, especially for closest candidate.
+        area_floor = size_tolerance * 0.18 * (1.0 - min(0.55, 0.18 * (gap - 1)))
         if sparse_pool:
-            area_floor *= 0.35
-        if area_ratio < area_floor and (i != closest_idx):
+            area_floor *= 0.25
+        if area_ratio < area_floor and i != closest_idx:
             continue
 
-        poly_sim = _polygon_similarity(last, node)
-        iou = _node_iou(last, node)
-        weak_link = (iou < (link_iou * 0.15) and gap == 1 and poly_sim < 0.08)
+        iou, ov_prev, ov_cur = _node_overlap_pair(ref, node)
+        poly_sim = _polygon_similarity(ref, node)
+        weak_link = (ov_prev < (link_iou * 0.12) and ov_cur < 0.20 and gap == 1 and poly_sim < 0.06)
         if weak_link and not sparse_pool and i != closest_idx:
             continue
 
-        closest_bonus = 0.20 if i == closest_idx else 0.0
-        sparse_bonus = 0.18 if sparse_pool and weak_link else 0.0
-        score = iou + 0.45 * area_ratio + 0.12 * poly_sim - 0.005 * dist - 0.010 * (gap - 1) + sparse_bonus + closest_bonus
+        closest_bonus = 0.24 if i == closest_idx else 0.0
+        sparse_bonus = 0.20 if sparse_pool and weak_link else 0.0
+        score = (
+            0.70 * ov_prev
+            + 0.20 * ov_cur
+            + 0.30 * area_ratio
+            + 0.10 * poly_sim
+            - 0.0045 * dist
+            - 0.008 * (gap - 1)
+            + closest_bonus
+            + sparse_bonus
+        )
         edges.append((score, ai, i, iou, gap))
     return edges
 
@@ -362,19 +407,19 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
             candidate_idx = gpu_candidates.get(ai, []) if gpu_candidates is not None else _query_neighbors(last, grid, cs)
             merged_idx = []
 
-            # split-aware combine: allow one previous mask to map to multiple components in current slice
-            # when combined mask matches previous area/shape better.
+            # split-aware combine: allow one previous mask to map to multiple components (1->N) in current slice.
             if gap == 1:
+                ref = _track_reference_node(tr)
                 cur_node = node
-                cur_iou = float(iou)
-                cur_area_err = abs(cur_node.area - last.area) / (last.area + 1e-6)
+                cur_iou, cur_ov_prev, cur_ov_cur = _node_overlap_pair(ref, cur_node)
+                cur_area_err = abs(cur_node.area - ref.area) / (ref.area + 1e-6)
                 improved = True
                 while improved:
                     improved = False
                     best_j = None
                     best_candidate = None
                     best_err = cur_area_err
-                    best_iou = cur_iou
+                    best_ov_prev = cur_ov_prev
                     split_candidates = _query_neighbors(cur_node, grid, cs)
                     split_candidates = list(dict.fromkeys(candidate_idx + split_candidates))
                     for j in split_candidates:
@@ -384,20 +429,20 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                         if n2.z != cur_node.z:
                             continue
                         dist2 = np.linalg.norm(n2.centroid - cur_node.centroid)
-                        if dist2 > (merge_dist * 2.2):
+                        if dist2 > (merge_dist * 2.4):
                             continue
                         test = _merge_nodes([cur_node, n2])
-                        test_iou = _node_iou(last, test)
-                        test_err = abs(test.area - last.area) / (last.area + 1e-6)
-                        if (test_err < best_err - 0.05 and test_iou >= cur_iou - 0.10) or (test_iou > best_iou + 0.08):
+                        test_iou, test_ov_prev, _ = _node_overlap_pair(ref, test)
+                        test_err = abs(test.area - ref.area) / (ref.area + 1e-6)
+                        if (test_ov_prev > best_ov_prev + 0.08) or (test_err < best_err - 0.04 and test_iou >= cur_iou - 0.12):
                             best_j = j
                             best_candidate = test
                             best_err = test_err
-                            best_iou = test_iou
+                            best_ov_prev = test_ov_prev
                     if best_j is not None:
                         merged_idx.append(best_j)
                         cur_node = best_candidate
-                        cur_iou = best_iou
+                        cur_iou, cur_ov_prev, cur_ov_cur = _node_overlap_pair(ref, cur_node)
                         cur_area_err = best_err
                         improved = True
                 if merged_idx:
@@ -431,8 +476,8 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                     "score": float(score),
                 })
 
-        # Force-attach leftover nodes: prioritize nearest track continuity.
-        leftover = [i for i, n in enumerate(current_nodes) if i not in used and n.area >= force_attach_min_area]
+        # Force-attach leftover nodes: prioritize nearest track continuity and do not leave leftovers.
+        leftover = [i for i, n in enumerate(current_nodes) if i not in used]
         for idx in sorted(leftover, key=lambda j: current_nodes[j].area, reverse=True):
             node = current_nodes[idx]
             best = None
@@ -458,18 +503,32 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                 dist = np.linalg.norm(node.centroid - last.centroid)
                 if dist > (link_dist * 2.8):
                     continue
-                area_ratio = min(last.area, node.area) / max(last.area, node.area)
-                score = 0.20 * area_ratio - 0.004 * dist - 0.015 * (gap - 1)
+                ref = _track_reference_node(tr)
+                area_ratio = min(ref.area, node.area) / max(ref.area, node.area)
+                _, ov_prev, ov_cur = _node_overlap_pair(ref, node)
+                score = 0.25 * area_ratio + 0.35 * ov_prev + 0.15 * ov_cur - 0.0038 * dist - 0.012 * (gap - 1)
                 if score > best_score:
                     best_score = score
                     best = (ai, tr, gap)
+            if best is None and len(active):
+                # absolute fallback: attach to nearest active track to avoid leftovers.
+                dmin, ai_min = None, None
+                for ai2, tr2 in enumerate(active):
+                    d = np.linalg.norm(node.centroid - tr2.nodes[-1].centroid)
+                    if dmin is None or d < dmin:
+                        dmin, ai_min = d, ai2
+                if ai_min is not None:
+                    best = (ai_min, active[ai_min], max(1, node.z - active[ai_min].nodes[-1].z))
+                    best_score = -0.003 * float(dmin)
+
             if best is not None:
                 ai, tr, gap = best
                 last = tr.nodes[-1]
                 if gap == 0:
                     merged = _merge_nodes([last, node])
                     tr.nodes[-1] = merged
-                    tr.links[-1] = _node_iou(tr.nodes[-2], merged) if len(tr.nodes) > 1 else tr.links[-1]
+                    if len(tr.nodes) > 1 and len(tr.links) > 0:
+                        tr.links[-1] = _node_iou(tr.nodes[-2], merged)
                 else:
                     iou = _node_iou(last, node)
                     last.compact()
