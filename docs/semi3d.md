@@ -139,13 +139,16 @@ Useful flags:
 - `--semi3d_stage1_masks` (preferred TIFF), `--semi3d_stage1_flows`, `--semi3d_stage1_prob`
 - `--semi3d_memmap_stage2_inputs` (memory-map masks in stage2)
 - `--semi3d_stage2_use_gpu` (GPU refiner scoring in stage2)
-- `--semi3d_link_gpu_prefilter` (hybrid GPU prefilter for linking)
+- `--semi3d_link_workers` (parallel thread workers for link candidate scoring)
+- `--semi3d_link_gpu_prefilter` (GPU proposal of local (neighbor-only) top-K pair candidates before exact scoring/assignment)
 - `--semi3d_merge_dist` (merge split detections of the same cell within a slice)
 - `--semi3d_border_exclusion_px`
 - `--semi3d_fill_edges` (fills first/last slices too)
 - `--semi3d_allow_overlap_recon` (disable occupancy-aware reconstruction blocking)
 - `--semi3d_recon_min_free_fraction` (reject impossible reconstructions that mostly overlap established cells)
 - `--semi3d_use_prob_occupancy`, `--semi3d_prob_occupancy_thresh` (use stage1 probability map as occupancy prior in stage2)
+
+Stage2 linking now performs confidence-ordered global assignment with a sparse-candidate fallback: if only one plausible candidate remains for a track in a slice neighborhood, weak-overlap links can still be retained.
 - `--semi3d_save_debug_tiff` (save debug flow/prob/refiner maps as TIFF)
 - `--semi3d_max_gap` (supports 2+ skips)
 - `--use_gpu` for accelerated stage1 inference
