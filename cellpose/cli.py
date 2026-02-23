@@ -243,6 +243,10 @@ def get_arg_parser():
                              help="run semi-3D inference (2D slices + z-linking/reconstruction)")
     semi3d_args.add_argument("--semi3d_train", action="store_true",
                              help="train semi-3D refinement classifier")
+    semi3d_args.add_argument("--semi3d_stage1", action="store_true",
+                             help="run semi-3D stage1 only (2D per-slice inference + save masks)")
+    semi3d_args.add_argument("--semi3d_stage2", action="store_true",
+                             help="run semi-3D stage2 only (linking/reconstruction from saved stage1 masks)")
     semi3d_args.add_argument("--semi3d_eval", action="store_true",
                              help="evaluate semi-3D outputs")
     semi3d_args.add_argument("--semi3d_input", default=None, type=str,
@@ -265,7 +269,7 @@ def get_arg_parser():
                              help="max centroid distance for linking")
     semi3d_args.add_argument("--semi3d_size_tolerance", default=0.6, type=float,
                              help="minimum relative area similarity for linking")
-    semi3d_args.add_argument("--semi3d_max_gap", default=2, type=int,
+    semi3d_args.add_argument("--semi3d_max_gap", default=3, type=int,
                              help="max z gap allowed in track linking")
     semi3d_args.add_argument("--semi3d_min_track_len", default=2, type=int,
                              help="minimum linked length to keep a track")
@@ -275,6 +279,54 @@ def get_arg_parser():
                              help="save 3D z-consistent track labels for semi3d inference")
     semi3d_args.add_argument("--semi3d_refiner_model", default=None, type=str,
                              help="path to trained semi3d_refiner.npz for track filtering during inference")
+    semi3d_args.add_argument("--semi3d_stage1_masks", default=None, type=str,
+                             help="path to semi3d_stage1_masks.tif (or .npy) for --semi3d_stage2")
+    semi3d_args.add_argument("--semi3d_stage1_flows", default=None, type=str,
+                             help="optional path to semi3d_stage1_flows.npy for --semi3d_stage2")
+    semi3d_args.add_argument("--semi3d_stage1_prob", default=None, type=str,
+                             help="optional path to semi3d_stage1_prob.tif for --semi3d_stage2")
+    semi3d_args.add_argument("--semi3d_border_exclusion_px", default=0, type=int,
+                             help="remove stage1 instances touching border band of this width")
+    semi3d_args.add_argument("--semi3d_fill_edges", action="store_true",
+                             help="fill reconstructed track masks on first/last stack slices")
+    semi3d_args.add_argument("--semi3d_save_flows", action="store_true",
+                             help="save stage1 flow hints for stage2 reconstruction")
+    semi3d_args.add_argument("--semi3d_save_debug_tiff", action="store_true",
+                             help="save debug maps (flow magnitude / probability / refiner keep prob) as TIFF")
+    semi3d_args.add_argument("--semi3d_stage2_use_gpu", action="store_true",
+                             help="use GPU acceleration for stage2 refiner scoring when available")
+    semi3d_args.add_argument("--semi3d_memmap_stage2_inputs", action="store_true",
+                             help="memory-map stage2 input masks when using .npy inputs to reduce RAM usage")
+    semi3d_args.add_argument("--semi3d_link_gpu_prefilter", action="store_true",
+                             help="use hybrid GPU prefilter (distance/size gating) during stage2 linking")
+    semi3d_args.add_argument("--semi3d_merge_dist", default=12.0, type=float,
+                             help="max centroid distance to merge split detections within a slice")
+    semi3d_args.add_argument("--semi3d_allow_overlap_recon", action="store_true",
+                             help="allow reconstructed masks to overlap already-established masks")
+    semi3d_args.add_argument("--semi3d_recon_min_free_fraction", default=0.25, type=float,
+                             help="minimum free-pixel fraction required to keep reconstructed mask")
+    semi3d_args.add_argument("--semi3d_use_prob_occupancy", action="store_true",
+                             help="use stage1 probability map as additional occupancy prior in stage2 reconstruction")
+    semi3d_args.add_argument("--semi3d_prob_occupancy_thresh", default=0.5, type=float,
+                             help="probability threshold above which territories are treated as occupied for reconstruction")
+    semi3d_args.add_argument("--semi3d_disable_stage1_prob_defog", action="store_true",
+                             help="disable stage1 probability de-fogging before saving stage1 prob TIFF")
+    semi3d_args.add_argument("--semi3d_stage1_prob_bg_percentile", default=2.0, type=float,
+                             help="background percentile after stage1 fog-field and boundary darkening")
+    semi3d_args.add_argument("--semi3d_stage1_prob_hi_percentile", default=98.0, type=float,
+                             help="high percentile after stage1 fog-field subtraction")
+    semi3d_args.add_argument("--semi3d_stage1_prob_gamma", default=0.85, type=float,
+                             help="gamma after stage1 fog-field subtraction and percentile normalization")
+    semi3d_args.add_argument("--semi3d_stage1_prob_bg_sigma", default=50.0, type=float,
+                             help="gaussian sigma (pixels) for spatial fog-field estimation in stage1")
+    semi3d_args.add_argument("--semi3d_stage1_cellprob_threshold", default=-2.0, type=float,
+                             help="cellprob threshold for stage1 2D Cellpose eval (lower => keep more candidate structures)")
+    semi3d_args.add_argument("--semi3d_disable_stage1_use_defog_prob_for_cellpose", action="store_true",
+                             help="disable feeding de-fogged stage1 probability map back into Cellpose for mask creation")
+    semi3d_args.add_argument("--semi3d_stage1_prob_boundary_sigma", default=1.2, type=float,
+                             help="gaussian smoothing sigma for boundary darkening map in stage1 defog")
+    semi3d_args.add_argument("--semi3d_stage1_prob_boundary_strength", default=0.35, type=float,
+                             help="strength of boundary darkening after large-scale fog removal in stage1")
     semi3d_args.add_argument("--semi3d_refiner_threshold", default=0.5, type=float,
                              help="keep threshold for trained semi3d refiner probability")
     semi3d_args.add_argument("--semi3d_simulate_z_dropout", action="store_true",
@@ -285,6 +337,14 @@ def get_arg_parser():
                              help="learning rate for semi3d refiner")
     semi3d_args.add_argument("--semi3d_epochs", default=200, type=int,
                              help="training epochs for semi3d refiner")
+    semi3d_args.add_argument("--semi3d_refiner_linear", action="store_true",
+                             help="use linear refiner instead of nonlinear model")
+    semi3d_args.add_argument("--semi3d_refiner_hidden_dim", default=16, type=int,
+                             help="hidden dimension for nonlinear refiner")
+    semi3d_args.add_argument("--semi3d_refiner_batch_size", default=64, type=int,
+                             help="mini-batch size for refiner training")
+    semi3d_args.add_argument("--semi3d_synthetic_per_obj", default=6, type=int,
+                             help="number of synthetic distorted samples per GT object for refiner training")
 
 
     return parser

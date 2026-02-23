@@ -150,3 +150,136 @@ Results are written to `semi3d_eval.json`.
 - Semi-3D is a post-processing framework on top of 2D inference, not a full 3D neural backbone.
 - The algorithm is designed to fix missing-middle slices by coupling adjacent detections in z.
 - Use deterministic seed (`--semi3d_seed`) for reproducible runs.
+
+
+## 10) Linking implementation notes (current behavior)
+
+In the current code path, linking is **streamed per z-slice** (not all cells at once):
+
+1. For the current slice `z`, extract instance nodes only for that slice.
+2. Keep an `active` list of tracks that can still receive links (within `max_gap`).
+3. For each active track, score candidates in the current slice and take the best valid match.
+4. Start new tracks for unmatched nodes.
+5. Drop tracks that are too old to receive future links.
+
+Node representation is compact to reduce memory:
+- bounding box (`bbox`)
+- cropped binary mask (`mask_crop`)
+- centroid
+- area
+
+IoU is computed only in overlapping bbox windows, not full-frame mask arrays.
+This is much cheaper than materializing full HxW masks for every candidate pair.
+
+---
+
+## 11) Why linking still gets expensive
+
+Even with streaming, runtime/memory can still rise when:
+- each slice has many instances,
+- many tracks remain active at once,
+- `link_dist` is large (more candidate pairs survive),
+- `max_gap` is large (active set persists longer).
+
+In those regimes, complexity is dominated by pair scoring:
+
+`O(sum_z [#active_tracks(z) * #nodes(z)])`
+
+So the main wins come from **candidate pruning** and **faster pair scoring**.
+
+---
+
+## 12) High-impact efficiency improvements (recommended)
+
+### A) Spatial indexing / gated candidate search (CPU)
+
+Before IoU, query only nearby candidates using a spatial index (grid hash or KD-tree on centroids).
+This changes practical behavior from all-pairs to local-neighborhood pairs.
+
+- Build index per slice once.
+- For each active track, query radius = `link_dist`.
+- Evaluate IoU/area only on returned neighbors.
+
+This is usually the largest immediate speedup.
+
+### B) Two-stage scoring cascade
+
+Use cheap filters first, expensive checks last:
+1. centroid distance gate
+2. area-ratio gate
+3. bbox-overlap gate
+4. IoU on crop overlap
+
+Many pairs die early, reducing total IoU calls.
+
+### C) Track-state compaction
+
+For older nodes in a track, keep summary stats only.
+Retain full crop mask for the most recent node(s) used in linking.
+This cuts memory for long tracks.
+
+### D) Block/chunk processing in z
+
+Process z in windows (for example 16–64 slices), serialize intermediate track state, and continue.
+This bounds peak memory for very deep stacks.
+
+### E) Optional approximation mode
+
+For very dense data, use bbox-IoU surrogate first and compute exact mask IoU only for top-k candidates.
+
+---
+
+## 13) GPU acceleration opportunities for linking
+
+Right now GPU is used for:
+- stage1 Cellpose inference (`--use_gpu`)
+- optional stage2 refiner scoring (`--semi3d_stage2_use_gpu`)
+
+Linking itself is still CPU-oriented. To harness GPU for linking:
+
+### Option 1: GPU candidate scoring with torch tensors
+
+- Pack active centroids and current-slice centroids into tensors.
+- Compute full distance matrix on GPU in one shot.
+- Apply distance/area gating with tensor masks.
+- Return only surviving candidate indices to CPU for final IoU.
+
+Benefit: massive speedup in dense slices with many objects.
+
+### Option 2: GPU batched IoU on cropped masks
+
+For surviving pairs:
+- pad/pack crops by size groups,
+- compute intersections/unions in batched torch ops,
+- keep top-1 per active track.
+
+This moves the expensive boolean math to GPU.
+
+### Option 3: Hybrid strategy (recommended first)
+
+- GPU for distance + area prefiltering,
+- CPU for exact crop-IoU,
+- optional GPU path behind a flag.
+
+This gives most benefit with low implementation risk.
+
+---
+
+## 14) Practical tuning tips
+
+If you need speed right now without major code changes:
+- reduce `link_dist` until recall drops,
+- keep `max_gap` only as large as biologically needed,
+- raise `size_tolerance` slightly,
+- run stage1/stage2 split and inspect stage1 masks to reduce false instances early.
+
+These directly shrink candidate count and linking cost.
+
+
+## 15) Implemented optimizations in current code
+
+The current implementation now includes the first three CPU optimizations plus hybrid GPU prefiltering:
+- **A) Spatial indexing**: grid-based centroid neighborhood query per slice.
+- **B) Two-stage scoring cascade**: distance -> area ratio -> bbox overlap -> IoU.
+- **C) Track-state compaction**: older linked nodes drop dense `mask_crop` tensors.
+- **Hybrid GPU option (Option 3)**: `--semi3d_link_gpu_prefilter` runs distance/size candidate gating on GPU (when CUDA is available), then keeps exact IoU/link decisions on CPU.
