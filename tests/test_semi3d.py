@@ -37,6 +37,107 @@ def test_relabel_keeps_first_slice_tracks_even_below_thresholds():
 
     assert len(kept) == 1
     assert np.any(out[0] > 0)
+
+def test_relabel_drops_nearly_fully_occluded_direct_mask_instead_of_boundary_sliver():
+    from cellpose.semi3d.linking import Track, InstanceNode
+
+    shape = (32, 32)
+    full = np.zeros(shape, dtype=bool)
+    full[8:24, 8:24] = True
+
+    # High-confidence track already occupies almost the whole region.
+    occ = np.zeros(shape, dtype=bool)
+    occ[9:23, 9:23] = True
+
+    n1 = InstanceNode(
+        z=0,
+        instance_id=1,
+        bbox=(8, 24, 8, 24),
+        centroid=np.array([15.5, 15.5], dtype=np.float32),
+        area=int(full.sum()),
+        mask_crop=full[8:24, 8:24],
+    )
+    n2 = InstanceNode(
+        z=0,
+        instance_id=2,
+        bbox=(9, 23, 9, 23),
+        centroid=np.array([15.5, 15.5], dtype=np.float32),
+        area=int(occ.sum()),
+        mask_crop=occ[9:23, 9:23],
+    )
+
+    # track 2 first so it gets higher confidence and is placed first
+    t2 = Track(track_id=2, nodes=[n2], links=[])
+    t1 = Track(track_id=1, nodes=[n1], links=[])
+
+    img0 = np.zeros(shape, dtype=np.float32)
+    img0[9:23, 9:23] = 1.0
+    img = np.stack([img0], axis=0)
+
+    out, _, _, kept = relabel_tracks(
+        [t2, t1],
+        img,
+        min_track_len=1,
+        min_conf=0.0,
+        avoid_occupied=True,
+        min_free_fraction=0.25,
+        skip_gap_reconstruction=True,
+    )
+
+    # Only one label should remain; second track should not leave ring-like sliver.
+    uniq = np.unique(out[0])
+    assert sorted(uniq.tolist()) == [0, 1]
+
+
+def test_relabel_rejects_ring_like_free_residual_even_when_free_fraction_is_high():
+    from cellpose.semi3d.linking import Track, InstanceNode
+
+    shape = (48, 48)
+    full = np.zeros(shape, dtype=bool)
+    full[8:40, 8:40] = True
+
+    # Occupied core leaves a relatively thick ring-like residual.
+    occ = np.zeros(shape, dtype=bool)
+    occ[12:36, 12:36] = True
+
+    n_full = InstanceNode(
+        z=0,
+        instance_id=1,
+        bbox=(8, 40, 8, 40),
+        centroid=np.array([23.5, 23.5], dtype=np.float32),
+        area=int(full.sum()),
+        mask_crop=full[8:40, 8:40],
+    )
+    n_occ = InstanceNode(
+        z=0,
+        instance_id=2,
+        bbox=(12, 36, 12, 36),
+        centroid=np.array([23.5, 23.5], dtype=np.float32),
+        area=int(occ.sum()),
+        mask_crop=occ[12:36, 12:36],
+    )
+
+    t_occ = Track(track_id=2, nodes=[n_occ], links=[])
+    t_full = Track(track_id=1, nodes=[n_full], links=[])
+
+    img0 = np.zeros(shape, dtype=np.float32)
+    img0[12:36, 12:36] = 1.0
+    img = np.stack([img0], axis=0)
+
+    out, _, _, _ = relabel_tracks(
+        [t_occ, t_full],
+        img,
+        min_track_len=1,
+        min_conf=0.0,
+        avoid_occupied=True,
+        min_free_fraction=0.25,
+        skip_gap_reconstruction=True,
+    )
+
+    # Ring-only residual should be rejected; only occupied-core track remains.
+    uniq = np.unique(out[0])
+    assert sorted(uniq.tolist()) == [0, 1]
+
 def test_gap_tolerant_linking_and_mandatory_reconstruction():
     s0 = np.zeros((32, 32), dtype=np.int32)
     s1 = np.zeros((32, 32), dtype=np.int32)
@@ -269,6 +370,32 @@ def test_history_anchor_can_beat_last_node_for_reappearance():
 
 
 
+
+
+
+def test_merge_anchor_overlap_still_allowed_when_hanging_graphs_exist():
+    s0 = np.zeros((96, 96), dtype=np.int32)
+    s1 = np.zeros((96, 96), dtype=np.int32)
+
+    # graph A and B in previous slice; B stays hanging at z=1
+    s0[20:30, 20:30] = 1
+    s0[60:70, 60:70] = 2
+
+    # graph A continuation is split into boundary + interior fragments on current slice
+    s1[20:30, 20:30] = 3
+    s1[22:28, 22:28] = 4
+
+    tracks = build_association_tracks([s0, s1], link_iou=0.0, link_dist=18.0, max_gap=3, merge_dist=20.0)
+
+    tA = None
+    for t in tracks:
+        if t.nodes and t.nodes[0].instance_id == 1:
+            tA = t
+            break
+    assert tA is not None
+    assert len(tA.nodes) == 2
+    # even with hanging graph B, anchor-overlapping interior should merge into selected boundary node
+    assert tA.nodes[-1].area == 100
 
 
 def test_merge_bypassed_when_hanging_graphs_exist():

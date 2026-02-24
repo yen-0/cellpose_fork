@@ -1,5 +1,6 @@
 import os
 import numpy as np
+import cv2
 from concurrent.futures import ThreadPoolExecutor
 
 try:
@@ -21,6 +22,19 @@ def _node_mask(node, shape, slice_mask=None):
 
 
 
+
+
+def _has_sufficient_mask_core(mask: np.ndarray, min_core_fraction: float = 0.12, min_core_pixels: int = 12) -> bool:
+    """Return True when a binary mask has enough interior support after one erosion.
+
+    This guards against thin/ring-like remnants created by occupancy clipping.
+    """
+    area = int(mask.sum())
+    if area <= 0:
+        return False
+    eroded = cv2.erode(mask.astype(np.uint8), np.ones((3, 3), dtype=np.uint8), iterations=1) > 0
+    core = int(eroded.sum())
+    return core >= int(min_core_pixels) and (core / float(area + 1e-6)) >= float(min_core_fraction)
 
 def _build_slice_instance_cache(slice_mask):
     ids = np.unique(slice_mask)
@@ -175,7 +189,19 @@ def relabel_tracks(tracks, image_stack, flow_stack=None, min_track_len=2, min_co
             src = None if source_masks is None else source_masks[n.z]
             nmask = _node_mask(n, image_stack[0].shape[:2], slice_mask=src)
             force_keep_first_slice = (n.z == 0)
-            nmask_use = nmask if (force_keep_first_slice or not avoid_occupied) else np.logical_and(nmask, out[n.z] == 0)
+            if force_keep_first_slice or not avoid_occupied:
+                nmask_use = nmask
+            else:
+                free = np.logical_and(nmask, out[n.z] == 0)
+                free_fraction = float(free.sum() / (nmask.sum() + 1e-6))
+                # Avoid writing thin boundary remnants when almost all direct pixels
+                # are already occupied by earlier, higher-confidence tracks.
+                if free_fraction < float(min_free_fraction):
+                    continue
+                # Also reject ring/sliver leftovers that have little interior core.
+                if not _has_sufficient_mask_core(free):
+                    continue
+                nmask_use = free
             if not np.any(nmask_use):
                 continue
             out[n.z][nmask_use] = tid
