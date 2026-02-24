@@ -463,14 +463,12 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                     worker_count,
                 )
                 _LINK_WORKERS_AUTO_LOGGED = True
-        # keep remapping logic simple/correct when gpu prefilter is active
-        if prefilter_map is not None:
-            if not _LINK_WORKERS_SINGLECORE_LOGGED:
-                LOGGER.info(
-                    "[semi3d:stage2] GPU prefilter is active; running link candidate scoring on a single core for correctness"
-                )
-                _LINK_WORKERS_SINGLECORE_LOGGED = True
-            worker_count = 1
+        if prefilter_map is not None and worker_count > 1 and not _LINK_WORKERS_MULTICORE_LOGGED:
+            LOGGER.info(
+                "[semi3d:stage2] GPU prefilter is active; running multicore link candidate scoring with workers=%d",
+                worker_count,
+            )
+            _LINK_WORKERS_MULTICORE_LOGGED = True
 
         if worker_count > 1 and not _LINK_WORKERS_MULTICORE_LOGGED:
             LOGGER.info("[semi3d:stage2] Multicore link candidate scoring enabled with workers=%d", worker_count)
@@ -480,12 +478,26 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
             _LINK_WORKERS_SINGLECORE_LOGGED = True
         if worker_count > 1 and len(prev_tracks) > 1 and len(current_nodes) > 0:
             with ThreadPoolExecutor(max_workers=worker_count) as ex:
-                futures = [
-                    ex.submit(_pair_candidates_for_track, ti, tr.nodes[-1], current_nodes, link_iou)
-                    for ti, tr in enumerate(prev_tracks)
-                ]
-                for fut in futures:
-                    pair_candidates.extend(fut.result())
+                futures = []
+                for ti, tr in enumerate(prev_tracks):
+                    candidate_ids = None if prefilter_map is None else prefilter_map.get(ti, [])
+                    candidates = current_nodes if candidate_ids is None else [current_nodes[j] for j in candidate_ids]
+                    futures.append((candidate_ids, ex.submit(
+                        _pair_candidates_for_track,
+                        ti,
+                        tr.nodes[-1],
+                        candidates,
+                        link_iou,
+                    )))
+
+                for candidate_ids, fut in futures:
+                    local_candidates = fut.result()
+                    if candidate_ids is not None:
+                        local_candidates = [
+                            (score, raw_iou, iou_a, t_idx, candidate_ids[ci], anchor)
+                            for score, raw_iou, iou_a, t_idx, ci, anchor in local_candidates
+                        ]
+                    pair_candidates.extend(local_candidates)
         else:
             for ti, tr in enumerate(prev_tracks):
                 candidate_ids = None if prefilter_map is None else prefilter_map.get(ti, [])

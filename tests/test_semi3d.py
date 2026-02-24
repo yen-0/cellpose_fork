@@ -527,3 +527,42 @@ def test_link_workers_parallel_matches_single_thread():
     sig_single = sorted((tuple(n.instance_id for n in tr.nodes), tuple(n.z for n in tr.nodes)) for tr in single)
     sig_parallel = sorted((tuple(n.instance_id for n in tr.nodes), tuple(n.z for n in tr.nodes)) for tr in parallel)
     assert sig_single == sig_parallel
+
+
+def test_gpu_prefilter_parallel_matches_single_thread(monkeypatch):
+    from cellpose.semi3d import linking
+
+    s0 = np.zeros((96, 96), dtype=np.int32)
+    s1 = np.zeros((96, 96), dtype=np.int32)
+    s2 = np.zeros((96, 96), dtype=np.int32)
+
+    for idx, x in enumerate(range(8, 88, 12), start=1):
+        s0[10:18, x:x + 8] = idx
+        s1[11:19, x + 1:x + 9] = idx
+        s2[12:20, x + 2:x + 10] = idx
+
+    def full_prefilter(active, current_nodes, link_dist, size_tolerance):
+        return {ti: list(range(len(current_nodes))) for ti in range(len(active))}
+
+    monkeypatch.setattr(linking, "_gpu_prefilter_candidates", full_prefilter)
+
+    single = linking.build_association_tracks(
+        [s0, s1, s2],
+        link_iou=0.1,
+        link_dist=20.0,
+        max_gap=3,
+        gpu_prefilter=True,
+        link_workers=1,
+    )
+    parallel = linking.build_association_tracks(
+        [s0, s1, s2],
+        link_iou=0.1,
+        link_dist=20.0,
+        max_gap=3,
+        gpu_prefilter=True,
+        link_workers=4,
+    )
+
+    sig_single = sorted((tuple(n.instance_id for n in tr.nodes), tuple(n.z for n in tr.nodes)) for tr in single)
+    sig_parallel = sorted((tuple(n.instance_id for n in tr.nodes), tuple(n.z for n in tr.nodes)) for tr in parallel)
+    assert sig_single == sig_parallel
