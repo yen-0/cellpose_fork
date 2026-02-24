@@ -416,9 +416,15 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
         # 1) Primary linking by IoU-only score (no distance ranking).
         prev_tracks = [tr for tr in active if tr.nodes and tr.nodes[-1].z == (z - 1)]
         pair_candidates = []
+        prefilter_map = None
+        if gpu_prefilter:
+            prefilter_map = _gpu_prefilter_candidates(prev_tracks, current_nodes, link_dist, size_tolerance)
         worker_count = int(link_workers) if link_workers is not None else 1
         if worker_count <= 0:
             worker_count = os.cpu_count() or 1
+        # keep remapping logic simple/correct when gpu prefilter is active
+        if prefilter_map is not None:
+            worker_count = 1
         if worker_count > 1 and len(prev_tracks) > 1 and len(current_nodes) > 0:
             with ThreadPoolExecutor(max_workers=worker_count) as ex:
                 futures = [
@@ -429,9 +435,15 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                     pair_candidates.extend(fut.result())
         else:
             for ti, tr in enumerate(prev_tracks):
-                pair_candidates.extend(
-                    _pair_candidates_for_track(ti, tr.nodes[-1], current_nodes, link_iou)
-                )
+                candidate_ids = None if prefilter_map is None else prefilter_map.get(ti, [])
+                candidates = current_nodes if candidate_ids is None else [current_nodes[j] for j in candidate_ids]
+                local_candidates = _pair_candidates_for_track(ti, tr.nodes[-1], candidates, link_iou)
+                if candidate_ids is not None:
+                    local_candidates = [
+                        (score, raw_iou, iou_a, t_idx, candidate_ids[ci], anchor)
+                        for score, raw_iou, iou_a, t_idx, ci, anchor in local_candidates
+                    ]
+                pair_candidates.extend(local_candidates)
 
         pair_candidates.sort(reverse=True)
         used_prev_tracks = set()

@@ -63,6 +63,31 @@ def test_two_skip_linking_supported():
     assert tracks[0].gap_hist.get(2, 0) == 1
 
 
+def test_gpu_prefilter_remaps_candidate_indices(monkeypatch):
+    from cellpose.semi3d import linking
+
+    s0 = np.zeros((32, 32), dtype=np.int32)
+    s1 = np.zeros((32, 32), dtype=np.int32)
+    s0[10:14, 10:14] = 1
+    s1[10:14, 10:14] = 2
+
+    def fake_prefilter(active, current_nodes, link_dist, size_tolerance):
+        return {0: [0]}
+
+    monkeypatch.setattr(linking, "_gpu_prefilter_candidates", fake_prefilter)
+    tracks = linking.build_association_tracks(
+        [s0, s1],
+        link_iou=0.1,
+        link_dist=10.0,
+        max_gap=2,
+        gpu_prefilter=True,
+        link_workers=2,
+    )
+    linked = [tr for tr in tracks if len(tr.nodes) == 2]
+    assert len(linked) == 1
+    assert linked[0].nodes[-1].instance_id == 2
+
+
 
 
 
