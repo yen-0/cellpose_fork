@@ -16,6 +16,10 @@ except Exception:  # pragma: no cover
 LOGGER = logging.getLogger(__name__)
 
 
+_GPU_PREFILTER_CUDA_UNAVAILABLE_WARNED = False
+_GPU_PREFILTER_EXCEPTION_WARNED = False
+
+
 @dataclass
 class InstanceNode:
     z: int
@@ -333,9 +337,18 @@ def _has_attachable_graph_for_node(node: InstanceNode,
     return False
 
 def _gpu_prefilter_candidates(active, current_nodes, link_dist, size_tolerance):
+    global _GPU_PREFILTER_CUDA_UNAVAILABLE_WARNED, _GPU_PREFILTER_EXCEPTION_WARNED
     try:
         import torch
-        if not torch.cuda.is_available() or len(active) == 0 or len(current_nodes) == 0:
+        if len(active) == 0 or len(current_nodes) == 0:
+            return None
+        if not torch.cuda.is_available():
+            if not _GPU_PREFILTER_CUDA_UNAVAILABLE_WARNED:
+                LOGGER.warning(
+                    "[semi3d:stage2] --semi3d_link_gpu_prefilter requested but CUDA unavailable; "
+                    "falling back to CPU candidate scoring"
+                )
+                _GPU_PREFILTER_CUDA_UNAVAILABLE_WARNED = True
             return None
         a_cent = np.stack([t.nodes[-1].centroid for t in active]).astype(np.float32)
         c_cent = np.stack([n.centroid for n in current_nodes]).astype(np.float32)
@@ -351,7 +364,13 @@ def _gpu_prefilter_candidates(active, current_nodes, link_dist, size_tolerance):
         valid = (dists <= link_dist) & (area_ratio >= (size_tolerance * 0.7))
         valid_cpu = valid.detach().cpu().numpy()
         return {i: np.where(valid_cpu[i])[0].tolist() for i in range(valid_cpu.shape[0])}
-    except Exception:
+    except Exception as e:
+        if not _GPU_PREFILTER_EXCEPTION_WARNED:
+            LOGGER.warning(
+                "[semi3d:stage2] --semi3d_link_gpu_prefilter fallback to CPU due to GPU prefilter error: %s",
+                e,
+            )
+            _GPU_PREFILTER_EXCEPTION_WARNED = True
         return None
 
 
