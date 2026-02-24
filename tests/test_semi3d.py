@@ -484,3 +484,21 @@ def test_labels_to_rgb_is_deterministic():
     assert rgb1.shape == labels.shape + (3,)
     assert np.array_equal(rgb1, rgb2)
     assert not np.array_equal(rgb1[1, 4, 4], rgb1[2, 6, 6])
+
+def test_link_workers_parallel_matches_single_thread():
+    s0 = np.zeros((96, 96), dtype=np.int32)
+    s1 = np.zeros((96, 96), dtype=np.int32)
+    s2 = np.zeros((96, 96), dtype=np.int32)
+
+    for idx, x in enumerate(range(8, 88, 12), start=1):
+        s0[10:18, x:x + 8] = idx
+        s1[11:19, x + 1:x + 9] = idx
+        s2[12:20, x + 2:x + 10] = idx
+
+    single = build_association_tracks([s0, s1, s2], link_iou=0.1, link_dist=20.0, max_gap=3, link_workers=1)
+    parallel = build_association_tracks([s0, s1, s2], link_iou=0.1, link_dist=20.0, max_gap=3, link_workers=4)
+
+    assert len(single) == len(parallel)
+    sig_single = sorted((tuple(n.instance_id for n in tr.nodes), tuple(n.z for n in tr.nodes)) for tr in single)
+    sig_parallel = sorted((tuple(n.instance_id for n in tr.nodes), tuple(n.z for n in tr.nodes)) for tr in parallel)
+    assert sig_single == sig_parallel

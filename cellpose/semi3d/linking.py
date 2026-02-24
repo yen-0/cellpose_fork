@@ -1,6 +1,8 @@
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 import logging
+import os
+from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import cv2
 
@@ -374,11 +376,24 @@ def _compute_pairwise_distances(active_tracks: List[Track], nodes: List[Instance
         return np.linalg.norm(a_cent[:, None, :] - c_cent[None, :, :], axis=2).astype(np.float32)
 
 
+def _pair_candidates_for_track(track_idx: int, anchor: InstanceNode, current_nodes: List[InstanceNode],
+                               link_iou: float):
+    candidates = []
+    for ci, node in enumerate(current_nodes):
+        iou_a, _ = _node_overlap_scores(anchor, node)
+        raw_iou = _node_raw_iou(anchor, node)
+        score = max(iou_a, raw_iou)
+        if score < float(link_iou):
+            continue
+        candidates.append((score, raw_iou, iou_a, track_idx, ci, anchor))
+    return candidates
+
+
 def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tolerance=0.6,
                              max_gap=3, gpu_prefilter=False, merge_dist=12.0, merge_iou_b_min=0.35,
                              merge_competition_margin=0.1, short_track_merge_len=2,
                              short_track_merge_iou_b_min=None,
-                             show_progress=False):
+                             show_progress=False, link_workers=1):
     tracks: List[Track] = []
     active: List[Track] = []
     next_track_id = 1
@@ -401,15 +416,22 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
         # 1) Primary linking by IoU-only score (no distance ranking).
         prev_tracks = [tr for tr in active if tr.nodes and tr.nodes[-1].z == (z - 1)]
         pair_candidates = []
-        for ti, tr in enumerate(prev_tracks):
-            anchor = tr.nodes[-1]
-            for ci, node in enumerate(current_nodes):
-                iou_a, _ = _node_overlap_scores(anchor, node)
-                raw_iou = _node_raw_iou(anchor, node)
-                score = max(iou_a, raw_iou)
-                if score < float(link_iou):
-                    continue
-                pair_candidates.append((score, raw_iou, iou_a, ti, ci, anchor))
+        worker_count = int(link_workers) if link_workers is not None else 1
+        if worker_count <= 0:
+            worker_count = os.cpu_count() or 1
+        if worker_count > 1 and len(prev_tracks) > 1 and len(current_nodes) > 0:
+            with ThreadPoolExecutor(max_workers=worker_count) as ex:
+                futures = [
+                    ex.submit(_pair_candidates_for_track, ti, tr.nodes[-1], current_nodes, link_iou)
+                    for ti, tr in enumerate(prev_tracks)
+                ]
+                for fut in futures:
+                    pair_candidates.extend(fut.result())
+        else:
+            for ti, tr in enumerate(prev_tracks):
+                pair_candidates.extend(
+                    _pair_candidates_for_track(ti, tr.nodes[-1], current_nodes, link_iou)
+                )
 
         pair_candidates.sort(reverse=True)
         used_prev_tracks = set()
