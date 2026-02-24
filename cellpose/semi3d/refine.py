@@ -181,7 +181,7 @@ def relabel_tracks(tracks, image_stack, flow_stack=None, min_track_len=2, min_co
                    fill_edges=False, return_track_labels=True, source_masks=None, avoid_occupied=True, min_free_fraction=0.25,
                    prob_stack=None, prob_occupancy_thresh=0.5, show_progress=False,
                    skip_gap_reconstruction=False, recon_workers=1, direct_overlap_mode="clip",
-                   boundary_overlap_core_weight=0.2):
+                   boundary_overlap_core_weight=0.2, return_debug_steps=False):
     zcount = len(image_stack)
     out = [np.zeros(image_stack[0].shape[:2], dtype=np.int32) for _ in range(zcount)]
     track_labels = np.zeros((zcount, *image_stack[0].shape[:2]), dtype=np.int32) if return_track_labels else None
@@ -207,6 +207,17 @@ def relabel_tracks(tracks, image_stack, flow_stack=None, min_track_len=2, min_co
         kept.append((tr, conf))
 
     kept = sorted(kept, key=lambda x: x[1], reverse=True)
+
+    debug_steps = {} if return_debug_steps else None
+    if return_debug_steps:
+        filtered = [np.zeros(image_stack[0].shape[:2], dtype=np.int32) for _ in range(zcount)]
+        for tid, (tr, _) in enumerate(kept, start=1):
+            for n in tr.nodes:
+                src = None if source_masks is None else source_masks[n.z]
+                nmask = _node_mask(n, image_stack[0].shape[:2], slice_mask=src)
+                if np.any(nmask):
+                    filtered[n.z][nmask] = tid
+        debug_steps["filtered_tracks"] = np.stack(filtered, axis=0).astype(np.int32)
 
     slice_caches = None
     if source_masks is not None:
@@ -278,7 +289,13 @@ def relabel_tracks(tracks, image_stack, flow_stack=None, min_track_len=2, min_co
             if track_labels is not None:
                 track_labels[z][use] = assigned[use]
 
+    if return_debug_steps:
+        debug_steps["direct_masks"] = np.stack(out, axis=0).astype(np.int32)
+
     if skip_gap_reconstruction:
+        if return_debug_steps:
+            debug_steps["reconstructed_masks"] = np.stack(out, axis=0).astype(np.int32)
+            return out, track_labels, reconstructed_flags, kept, debug_steps
         return out, track_labels, reconstructed_flags, kept
 
     worker_count = int(recon_workers) if recon_workers is not None else 1
@@ -329,4 +346,7 @@ def relabel_tracks(tracks, image_stack, flow_stack=None, min_track_len=2, min_co
                 track_labels[z][m_use] = tid
             reconstructed_flags[z][m_use] = 1
 
+    if return_debug_steps:
+        debug_steps["reconstructed_masks"] = np.stack(out, axis=0).astype(np.int32)
+        return out, track_labels, reconstructed_flags, kept, debug_steps
     return out, track_labels, reconstructed_flags, kept
