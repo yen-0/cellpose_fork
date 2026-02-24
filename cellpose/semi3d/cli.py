@@ -273,6 +273,16 @@ def _run_stage2(args):
         show_progress=True,
     )
 
+    if getattr(args, "save_stage2_steps", True):
+        linked = np.zeros_like(per_slice_masks, dtype=np.int32)
+        for tid, tr in enumerate(tracks, start=1):
+            for n in tr.nodes:
+                src = per_slice_masks[n.z]
+                nmask = n.full_mask(stack[0].shape[:2], slice_mask=src)
+                if np.any(nmask):
+                    linked[n.z][nmask] = tid
+        io.imsave(os.path.join(args.output, "semi3d_stage2_linked_tracks.tif"), linked)
+
     if args.refiner_model is not None:
         if not os.path.exists(args.refiner_model):
             raise FileNotFoundError(f"semi3d refiner model not found: {args.refiner_model}")
@@ -292,7 +302,7 @@ def _run_stage2(args):
             tracks = [tr for tr, p in zip(tracks, keep_prob) if p >= args.refiner_threshold]
 
     LOGGER.info("[semi3d:stage2] relabel/reconstruct")
-    refined, labels3d, reconstructed_flags, kept = relabel_tracks(
+    relabel_result = relabel_tracks(
         tracks,
         stack,
         flow_stack=per_slice_flows,
@@ -310,7 +320,22 @@ def _run_stage2(args):
         recon_workers=getattr(args, "recon_workers", 1),
         direct_overlap_mode=getattr(args, "direct_overlap_mode", "clip"),
         boundary_overlap_core_weight=getattr(args, "boundary_overlap_core_weight", 0.2),
+        return_debug_steps=getattr(args, "save_stage2_steps", True),
     )
+
+    if getattr(args, "save_stage2_steps", True):
+        refined, labels3d, reconstructed_flags, kept, debug_steps = relabel_result
+    else:
+        refined, labels3d, reconstructed_flags, kept = relabel_result
+        debug_steps = None
+
+    if debug_steps is not None:
+        if "filtered_tracks" in debug_steps:
+            io.imsave(os.path.join(args.output, "semi3d_stage2_filtered_tracks.tif"), debug_steps["filtered_tracks"].astype(np.int32))
+        if "direct_masks" in debug_steps:
+            io.imsave(os.path.join(args.output, "semi3d_stage2_direct_masks.tif"), debug_steps["direct_masks"].astype(np.int32))
+        if "reconstructed_masks" in debug_steps:
+            io.imsave(os.path.join(args.output, "semi3d_stage2_reconstructed_masks.tif"), debug_steps["reconstructed_masks"].astype(np.int32))
 
     refined_stack = np.stack(refined, axis=0).astype(np.int32)
     io.imsave(os.path.join(args.output, "semi3d_refined_masks.tif"), refined_stack)
@@ -389,6 +414,7 @@ def run_from_cellpose_args(args):
             stage1_use_defog_prob_for_cellpose=not args.semi3d_disable_stage1_use_defog_prob_for_cellpose,
             stage1_prob_boundary_sigma=args.semi3d_stage1_prob_boundary_sigma,
             stage1_prob_boundary_strength=args.semi3d_stage1_prob_boundary_strength,
+            save_stage2_steps=not args.semi3d_disable_save_stage2_steps,
         )
         total, kept = _run_inference(semi_args)
         print(f"semi3d complete: tracks={total}, kept={kept}")
@@ -460,6 +486,7 @@ def run_from_cellpose_args(args):
             stage1_prob=args.semi3d_stage1_prob,
             use_prob_occupancy=args.semi3d_use_prob_occupancy,
             prob_occupancy_thresh=args.semi3d_prob_occupancy_thresh,
+            save_stage2_steps=not args.semi3d_disable_save_stage2_steps,
         )
         total, kept = _run_stage2(semi_args)
         print(f"semi3d stage2 complete: tracks={total}, kept={kept}")
