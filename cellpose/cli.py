@@ -315,6 +315,11 @@ def get_arg_parser():
                              help="allow reconstructed masks to overlap already-established masks")
     semi3d_args.add_argument("--semi3d_recon_min_free_fraction", default=0.25, type=float,
                              help="minimum free-pixel fraction required to keep reconstructed mask")
+    semi3d_args.add_argument("--semi3d_direct_overlap_mode", default="clip", type=str,
+                             choices=["clip", "boundary_aware"],
+                             help="direct-mask overlap handling: clip against occupied map or boundary-aware arbitration")
+    semi3d_args.add_argument("--semi3d_boundary_overlap_core_weight", default=0.2, type=float,
+                             help="core-score weight used by boundary-aware direct overlap arbitration")
     semi3d_args.add_argument("--semi3d_skip_gap_reconstruction", action="store_true",
                              help="skip stage2 gap reconstruction and keep only direct linked masks")
     semi3d_args.add_argument("--semi3d_recon_workers", default=1, type=int,

@@ -138,6 +138,57 @@ def test_relabel_rejects_ring_like_free_residual_even_when_free_fraction_is_high
     uniq = np.unique(out[0])
     assert sorted(uniq.tolist()) == [0, 1]
 
+
+def test_relabel_boundary_aware_mode_arbitrates_overlaps_without_ring_residual():
+    from cellpose.semi3d.linking import Track, InstanceNode
+
+    shape = (40, 40)
+    outer = np.zeros(shape, dtype=bool)
+    outer[6:34, 6:34] = True
+    inner = np.zeros(shape, dtype=bool)
+    inner[12:28, 12:28] = True
+
+    n_outer = InstanceNode(
+        z=1,
+        instance_id=1,
+        bbox=(6, 34, 6, 34),
+        centroid=np.array([19.5, 19.5], dtype=np.float32),
+        area=int(outer.sum()),
+        mask_crop=outer[6:34, 6:34],
+    )
+    n_inner = InstanceNode(
+        z=1,
+        instance_id=2,
+        bbox=(12, 28, 12, 28),
+        centroid=np.array([19.5, 19.5], dtype=np.float32),
+        area=int(inner.sum()),
+        mask_crop=inner[12:28, 12:28],
+    )
+
+    t_outer = Track(track_id=1, nodes=[n_outer], links=[])
+    t_inner = Track(track_id=2, nodes=[n_inner], links=[])
+
+    img1 = np.zeros(shape, dtype=np.float32)
+    img1[6:34, 6:34] = 0.6
+    img1[12:28, 12:28] = 0.95
+    img = np.stack([np.zeros(shape, dtype=np.float32), img1], axis=0)
+
+    out, _, _, _ = relabel_tracks(
+        [t_outer, t_inner],
+        img,
+        min_track_len=1,
+        min_conf=0.0,
+        avoid_occupied=True,
+        skip_gap_reconstruction=True,
+        direct_overlap_mode="boundary_aware",
+        boundary_overlap_core_weight=0.3,
+    )
+
+    # Both IDs should be present on slice z=1; boundary-aware arbitration avoids
+    # reducing the lower-priority object to a clipping ring artifact.
+    uniq = np.unique(out[1])
+    assert 1 in uniq and 2 in uniq
+
 def test_gap_tolerant_linking_and_mandatory_reconstruction():
     s0 = np.zeros((32, 32), dtype=np.int32)
     s1 = np.zeros((32, 32), dtype=np.int32)
@@ -542,7 +593,7 @@ def test_main_parser_accepts_stage_flags():
     args = parser.parse_args([
         "--semi3d_stage2", "--semi3d_input", "/tmp/in.tif", "--semi3d_output", "/tmp/out",
         "--semi3d_stage1_masks", "/tmp/semi3d_stage1_masks.tif", "--semi3d_fill_edges",
-        "--semi3d_memmap_stage2_inputs", "--semi3d_stage2_use_gpu", "--semi3d_link_gpu_prefilter", "--semi3d_merge_dist", "10", "--semi3d_recon_min_free_fraction", "0.3", "--semi3d_save_debug_tiff", "--semi3d_use_prob_occupancy", "--semi3d_prob_occupancy_thresh", "0.55", "--semi3d_stage1_prob_bg_percentile", "30", "--semi3d_stage1_prob_hi_percentile", "98", "--semi3d_stage1_prob_gamma", "1.1", "--semi3d_stage1_prob_bg_sigma", "42", "--semi3d_stage1_cellprob_threshold", "-2.5", "--semi3d_stage1_prob_boundary_sigma", "1.8", "--semi3d_stage1_prob_boundary_strength", "0.45", "--semi3d_refiner_batch_size", "32"
+        "--semi3d_memmap_stage2_inputs", "--semi3d_stage2_use_gpu", "--semi3d_link_gpu_prefilter", "--semi3d_merge_dist", "10", "--semi3d_recon_min_free_fraction", "0.3", "--semi3d_save_debug_tiff", "--semi3d_use_prob_occupancy", "--semi3d_prob_occupancy_thresh", "0.55", "--semi3d_stage1_prob_bg_percentile", "30", "--semi3d_stage1_prob_hi_percentile", "98", "--semi3d_stage1_prob_gamma", "1.1", "--semi3d_stage1_prob_bg_sigma", "42", "--semi3d_stage1_cellprob_threshold", "-2.5", "--semi3d_stage1_prob_boundary_sigma", "1.8", "--semi3d_stage1_prob_boundary_strength", "0.45", "--semi3d_refiner_batch_size", "32", "--semi3d_direct_overlap_mode", "boundary_aware", "--semi3d_boundary_overlap_core_weight", "0.3"
     ])
     assert args.semi3d_stage2 is True
     assert args.semi3d_fill_edges is True
@@ -561,6 +612,8 @@ def test_main_parser_accepts_stage_flags():
     assert abs(args.semi3d_stage1_cellprob_threshold + 2.5) < 1e-6
     assert abs(args.semi3d_stage1_prob_boundary_sigma - 1.8) < 1e-6
     assert abs(args.semi3d_stage1_prob_boundary_strength - 0.45) < 1e-6
+    assert args.semi3d_direct_overlap_mode == "boundary_aware"
+    assert abs(args.semi3d_boundary_overlap_core_weight - 0.3) < 1e-6
     assert args.semi3d_refiner_batch_size == 32
 
 
