@@ -315,6 +315,10 @@ def get_arg_parser():
                              help="allow reconstructed masks to overlap already-established masks")
     semi3d_args.add_argument("--semi3d_recon_min_free_fraction", default=0.25, type=float,
                              help="minimum free-pixel fraction required to keep reconstructed mask")
+    semi3d_args.add_argument("--semi3d_skip_gap_reconstruction", action="store_true",
+                             help="skip stage2 gap reconstruction and keep only direct linked masks")
+    semi3d_args.add_argument("--semi3d_recon_workers", default=1, type=int,
+                             help="number of CPU worker threads used for stage2 gap prediction prep (0 uses all cores)")
     semi3d_args.add_argument("--semi3d_use_prob_occupancy", action="store_true",
                              help="use stage1 probability map as additional occupancy prior in stage2 reconstruction")
     semi3d_args.add_argument("--semi3d_prob_occupancy_thresh", default=0.5, type=float,

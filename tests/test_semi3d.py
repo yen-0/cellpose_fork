@@ -437,6 +437,16 @@ def test_main_parser_accepts_stage_flags():
     assert args.semi3d_refiner_batch_size == 32
 
 
+def test_main_parser_accepts_semi3d_skip_recon_flags():
+    args = get_arg_parser().parse_args([
+        "--semi3d_stage2", "--semi3d_input", "/tmp/in.tif", "--semi3d_output", "/tmp/out",
+        "--semi3d_stage1_masks", "/tmp/semi3d_stage1_masks.tif", "--semi3d_skip_gap_reconstruction",
+        "--semi3d_recon_workers", "0"
+    ])
+    assert args.semi3d_skip_gap_reconstruction is True
+    assert args.semi3d_recon_workers == 0
+
+
 def test_relabel_does_not_overwrite_confirmed_territory():
     from cellpose.semi3d.linking import Track, InstanceNode
     from cellpose.semi3d.refine import relabel_tracks
@@ -566,3 +576,25 @@ def test_gpu_prefilter_parallel_matches_single_thread(monkeypatch):
     sig_single = sorted((tuple(n.instance_id for n in tr.nodes), tuple(n.z for n in tr.nodes)) for tr in single)
     sig_parallel = sorted((tuple(n.instance_id for n in tr.nodes), tuple(n.z for n in tr.nodes)) for tr in parallel)
     assert sig_single == sig_parallel
+
+
+def test_skip_gap_reconstruction_disables_gap_fill():
+    from cellpose.semi3d.linking import Track, InstanceNode
+
+    img = np.zeros((3, 20, 20), dtype=np.float32)
+    m0 = np.zeros((20, 20), dtype=np.int32); m0[3:8, 3:8] = 1
+    m1 = np.zeros((20, 20), dtype=np.int32); m1[3:8, 3:8] = 2
+    m2 = np.zeros((20, 20), dtype=np.int32); m2[3:8, 3:8] = 3
+
+    n0 = InstanceNode(z=0, instance_id=1, bbox=(3, 8, 3, 8), centroid=np.array([5., 5.], dtype=np.float32), area=25, mask_crop=np.ones((5, 5), dtype=bool))
+    n2 = InstanceNode(z=2, instance_id=3, bbox=(3, 8, 3, 8), centroid=np.array([5., 5.], dtype=np.float32), area=25, mask_crop=np.ones((5, 5), dtype=bool))
+    tr = Track(track_id=1, nodes=[n0, n2], links=[0.8])
+
+    out, _, flags, _ = relabel_tracks(
+        [tr], img, min_track_len=1, min_conf=0.0,
+        source_masks=np.stack([m0, m1, m2], axis=0),
+        skip_gap_reconstruction=True,
+    )
+
+    assert not np.any(flags[1] > 0)
+    assert np.all(out[1] == 0)
