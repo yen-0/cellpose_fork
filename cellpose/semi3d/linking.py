@@ -18,6 +18,11 @@ LOGGER = logging.getLogger(__name__)
 
 _GPU_PREFILTER_CUDA_UNAVAILABLE_WARNED = False
 _GPU_PREFILTER_EXCEPTION_WARNED = False
+_GPU_PREFILTER_ACTIVE_LOGGED = False
+
+_LINK_WORKERS_AUTO_LOGGED = False
+_LINK_WORKERS_MULTICORE_LOGGED = False
+_LINK_WORKERS_SINGLECORE_LOGGED = False
 
 
 @dataclass
@@ -363,6 +368,15 @@ def _gpu_prefilter_candidates(active, current_nodes, link_dist, size_tolerance):
         area_ratio = torch.minimum(aa, ca) / torch.maximum(aa, ca)
         valid = (dists <= link_dist) & (area_ratio >= (size_tolerance * 0.7))
         valid_cpu = valid.detach().cpu().numpy()
+        global _GPU_PREFILTER_ACTIVE_LOGGED
+        if not _GPU_PREFILTER_ACTIVE_LOGGED:
+            LOGGER.info(
+                "[semi3d:stage2] GPU candidate prefilter active (CUDA available): "
+                "tracks=%d, nodes=%d",
+                len(active),
+                len(current_nodes),
+            )
+            _GPU_PREFILTER_ACTIVE_LOGGED = True
         return {i: np.where(valid_cpu[i])[0].tolist() for i in range(valid_cpu.shape[0])}
     except Exception as e:
         if not _GPU_PREFILTER_EXCEPTION_WARNED:
@@ -439,11 +453,31 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
         if gpu_prefilter:
             prefilter_map = _gpu_prefilter_candidates(prev_tracks, current_nodes, link_dist, size_tolerance)
         worker_count = int(link_workers) if link_workers is not None else 1
+        global _LINK_WORKERS_AUTO_LOGGED, _LINK_WORKERS_MULTICORE_LOGGED, _LINK_WORKERS_SINGLECORE_LOGGED
         if worker_count <= 0:
             worker_count = os.cpu_count() or 1
+            if not _LINK_WORKERS_AUTO_LOGGED:
+                LOGGER.info(
+                    "[semi3d:stage2] --semi3d_link_workers=%s resolved to auto multicore workers=%d",
+                    link_workers,
+                    worker_count,
+                )
+                _LINK_WORKERS_AUTO_LOGGED = True
         # keep remapping logic simple/correct when gpu prefilter is active
         if prefilter_map is not None:
+            if not _LINK_WORKERS_SINGLECORE_LOGGED:
+                LOGGER.info(
+                    "[semi3d:stage2] GPU prefilter is active; running link candidate scoring on a single core for correctness"
+                )
+                _LINK_WORKERS_SINGLECORE_LOGGED = True
             worker_count = 1
+
+        if worker_count > 1 and not _LINK_WORKERS_MULTICORE_LOGGED:
+            LOGGER.info("[semi3d:stage2] Multicore link candidate scoring enabled with workers=%d", worker_count)
+            _LINK_WORKERS_MULTICORE_LOGGED = True
+        elif worker_count <= 1 and prefilter_map is None and not _LINK_WORKERS_SINGLECORE_LOGGED:
+            LOGGER.info("[semi3d:stage2] Link candidate scoring running single-core (workers=%d)", worker_count)
+            _LINK_WORKERS_SINGLECORE_LOGGED = True
         if worker_count > 1 and len(prev_tracks) > 1 and len(current_nodes) > 0:
             with ThreadPoolExecutor(max_workers=worker_count) as ex:
                 futures = [
