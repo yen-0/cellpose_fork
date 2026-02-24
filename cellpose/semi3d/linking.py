@@ -412,7 +412,35 @@ def _compute_pairwise_distances(active_tracks: List[Track], nodes: List[Instance
 def _pair_candidates_for_track(track_idx: int, anchor: InstanceNode, current_nodes: List[InstanceNode],
                                link_iou: float):
     candidates = []
-    for ci, node in enumerate(current_nodes):
+    if len(current_nodes) == 0:
+        return candidates
+
+    ay0, ay1, ax0, ax1 = anchor.bbox
+    bb = np.asarray([n.bbox for n in current_nodes], dtype=np.int32)
+    by0 = bb[:, 0]
+    by1 = bb[:, 1]
+    bx0 = bb[:, 2]
+    bx1 = bb[:, 3]
+
+    iy0 = np.maximum(ay0, by0)
+    iy1 = np.minimum(ay1, by1)
+    ix0 = np.maximum(ax0, bx0)
+    ix1 = np.minimum(ax1, bx1)
+    ih = np.maximum(0, iy1 - iy0)
+    iw = np.maximum(0, ix1 - ix0)
+    inter_bbox = (ih * iw).astype(np.float32)
+
+    if anchor.area > 0:
+        iou_a_upper = inter_bbox / float(anchor.area)
+    else:
+        iou_a_upper = np.zeros_like(inter_bbox)
+    areas = np.asarray([n.area for n in current_nodes], dtype=np.float32)
+    union_lower = np.maximum(1.0, float(anchor.area) + areas - inter_bbox)
+    raw_iou_upper = inter_bbox / union_lower
+    viable = np.where(np.maximum(iou_a_upper, raw_iou_upper) >= float(link_iou))[0]
+
+    for ci in viable.tolist():
+        node = current_nodes[ci]
         iou_a, _ = _node_overlap_scores(anchor, node)
         raw_iou = _node_raw_iou(anchor, node)
         score = max(iou_a, raw_iou)
@@ -524,9 +552,10 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
             used_prev_tracks.add(ti)
 
         # 2) Leftovers attach to z-2 anchors using IoU-only score.
-        for i, node in enumerate(current_nodes):
-            if i in used:
-                continue
+        leftovers_stage2 = [i for i in range(len(current_nodes)) if i not in used]
+
+        def _best_z2_for_node(i):
+            node = current_nodes[i]
             best = None
             for tr in active:
                 last = tr.nodes[-1]
@@ -539,16 +568,33 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                     continue
                 if best is None or score > best[2]:
                     best = (tr, last, score)
-            if best is not None:
-                tr, anchor, score = best
-                tr.nodes.append(node)
-                tr.links.append(score)
-                assigned.append((tr, node, anchor, 2))
-                used.add(i)
+            return i, best
+
+        if worker_count > 1 and len(leftovers_stage2) > 1:
+            with ThreadPoolExecutor(max_workers=worker_count) as ex:
+                z2_best = list(ex.map(_best_z2_for_node, leftovers_stage2))
+        else:
+            z2_best = [_best_z2_for_node(i) for i in leftovers_stage2]
+
+        z2_best.sort(key=lambda t: (-1.0 if t[1] is None else -float(t[1][2]), t[0]))
+        taken_z2_tracks = set()
+        for i, best in z2_best:
+            if i in used or best is None:
+                continue
+            tr, anchor, score = best
+            if tr.track_id in taken_z2_tracks:
+                continue
+            node = current_nodes[i]
+            tr.nodes.append(node)
+            tr.links.append(score)
+            assigned.append((tr, node, anchor, 2))
+            used.add(i)
+            taken_z2_tracks.add(tr.track_id)
 
         # 3) If still unmatched, try any remaining graph via IoU-only score before merge/new track.
         leftovers = [i for i in range(len(current_nodes)) if i not in used]
-        for i in leftovers:
+
+        def _best_any_for_node(i):
             node = current_nodes[i]
             best_tr, best_anchor, best_gap, best_score = None, None, None, -1.0
             for tr in active:
@@ -562,8 +608,22 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                     continue
                 if score > best_score:
                     best_tr, best_anchor, best_gap, best_score = tr, anchor, gap, score
-            if best_tr is None:
+            return i, best_tr, best_anchor, best_gap, best_score
+
+        if worker_count > 1 and len(leftovers) > 1:
+            with ThreadPoolExecutor(max_workers=worker_count) as ex:
+                fallback_best = list(ex.map(_best_any_for_node, leftovers))
+        else:
+            fallback_best = [_best_any_for_node(i) for i in leftovers]
+
+        fallback_best.sort(key=lambda t: (-float(t[4]), t[0]))
+        taken_fallback_tracks = set()
+        for i, best_tr, best_anchor, best_gap, best_score in fallback_best:
+            if i in used or best_tr is None:
                 continue
+            if best_tr.track_id in taken_fallback_tracks:
+                continue
+            node = current_nodes[i]
             best_tr.nodes.append(node)
             best_tr.links.append(best_score)
             skips = max(0, best_gap - 1)
@@ -571,6 +631,7 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
             if skips > 0:
                 best_tr.gap_hist[skips] = best_tr.gap_hist.get(skips, 0) + 1
             used.add(i)
+            taken_fallback_tracks.add(best_tr.track_id)
 
         filled_track_ids = {tr.track_id for tr, _, _, _ in assigned}
         filled_track_ids.update(
@@ -595,9 +656,12 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
             while True:
                 merge_round += 1
                 merge_candidates = []
-                for tr, base_node, anchor, gap in assigned:
+
+                def _merge_candidates_for_assignment(entry):
+                    tr, base_node, anchor, gap = entry
                     if gap not in (1, 2):
-                        continue
+                        return []
+                    local = []
                     for j, n2 in enumerate(current_nodes):
                         if j in used:
                             continue
@@ -648,7 +712,16 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                         if iou_b < required_iou or raw_iou < required_raw_iou:
                             continue
                         merge_score = min(iou_b, raw_iou)
-                        merge_candidates.append((merge_score, tr, anchor, base_node, j))
+                        local.append((merge_score, tr, anchor, base_node, j))
+                    return local
+
+                if worker_count > 1 and len(assigned) > 1 and len(current_nodes) > 0:
+                    with ThreadPoolExecutor(max_workers=worker_count) as ex:
+                        for local in ex.map(_merge_candidates_for_assignment, assigned):
+                            merge_candidates.extend(local)
+                else:
+                    for entry in assigned:
+                        merge_candidates.extend(_merge_candidates_for_assignment(entry))
 
                 if not merge_candidates:
                     break

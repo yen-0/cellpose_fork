@@ -306,6 +306,8 @@ def _run_stage2(args):
         prob_stack=stage1_prob if args.use_prob_occupancy else None,
         prob_occupancy_thresh=args.prob_occupancy_thresh,
         show_progress=True,
+        skip_gap_reconstruction=getattr(args, "skip_gap_reconstruction", False),
+        recon_workers=getattr(args, "recon_workers", 1),
     )
 
     refined_stack = np.stack(refined, axis=0).astype(np.int32)
@@ -368,6 +370,8 @@ def run_from_cellpose_args(args):
             short_track_merge_iou_b_min=args.semi3d_short_track_merge_iou_b_min,
             allow_overlap_recon=args.semi3d_allow_overlap_recon,
             recon_min_free_fraction=args.semi3d_recon_min_free_fraction,
+            skip_gap_reconstruction=args.semi3d_skip_gap_reconstruction,
+            recon_workers=args.semi3d_recon_workers,
             save_debug_tiff=args.semi3d_save_debug_tiff,
             stage1_prob=args.semi3d_stage1_prob,
             use_prob_occupancy=args.semi3d_use_prob_occupancy,
@@ -444,6 +448,8 @@ def run_from_cellpose_args(args):
             short_track_merge_iou_b_min=args.semi3d_short_track_merge_iou_b_min,
             allow_overlap_recon=args.semi3d_allow_overlap_recon,
             recon_min_free_fraction=args.semi3d_recon_min_free_fraction,
+            skip_gap_reconstruction=args.semi3d_skip_gap_reconstruction,
+            recon_workers=args.semi3d_recon_workers,
             save_debug_tiff=args.semi3d_save_debug_tiff,
             stage1_prob=args.semi3d_stage1_prob,
             use_prob_occupancy=args.semi3d_use_prob_occupancy,
