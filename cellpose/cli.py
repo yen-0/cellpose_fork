@@ -299,6 +299,8 @@ def get_arg_parser():
                              help="memory-map stage2 input masks when using .npy inputs to reduce RAM usage")
     semi3d_args.add_argument("--semi3d_link_gpu_prefilter", action="store_true",
                              help="use hybrid GPU prefilter (distance/size gating) during stage2 linking")
+    semi3d_args.add_argument("--semi3d_link_workers", default=1, type=int,
+                             help="number of CPU worker threads for stage2 link-candidate scoring (0 uses all cores)")
     semi3d_args.add_argument("--semi3d_merge_dist", default=12.0, type=float,
                              help="max centroid distance to merge split detections within a slice")
     semi3d_args.add_argument("--semi3d_merge_iou_b_min", default=0.35, type=float,
