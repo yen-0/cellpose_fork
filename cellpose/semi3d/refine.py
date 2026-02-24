@@ -1,5 +1,6 @@
 import os
 import numpy as np
+import cv2
 from concurrent.futures import ThreadPoolExecutor
 
 try:
@@ -21,6 +22,19 @@ def _node_mask(node, shape, slice_mask=None):
 
 
 
+
+
+def _has_sufficient_mask_core(mask: np.ndarray, min_core_fraction: float = 0.12, min_core_pixels: int = 12) -> bool:
+    """Return True when a binary mask has enough interior support after one erosion.
+
+    This guards against thin/ring-like remnants created by occupancy clipping.
+    """
+    area = int(mask.sum())
+    if area <= 0:
+        return False
+    eroded = cv2.erode(mask.astype(np.uint8), np.ones((3, 3), dtype=np.uint8), iterations=1) > 0
+    core = int(eroded.sum())
+    return core >= int(min_core_pixels) and (core / float(area + 1e-6)) >= float(min_core_fraction)
 
 def _build_slice_instance_cache(slice_mask):
     ids = np.unique(slice_mask)
@@ -52,6 +66,39 @@ def _build_slice_instance_cache(slice_mask):
         "areas": np.asarray(areas, dtype=np.float32),
         "bboxes": np.asarray(bboxes, dtype=np.int32),
     }
+
+def _mask_core_score_map(mask: np.ndarray) -> np.ndarray:
+    """Per-pixel core score in [0,1] based on distance-to-boundary inside mask."""
+    if mask.dtype != np.uint8:
+        m = mask.astype(np.uint8)
+    else:
+        m = mask
+    if m.sum() <= 0:
+        return np.zeros(mask.shape, dtype=np.float32)
+    dist = cv2.distanceTransform(m, cv2.DIST_L2, 3).astype(np.float32)
+    mx = float(dist.max())
+    if mx <= 0:
+        return np.zeros(mask.shape, dtype=np.float32)
+    return dist / mx
+
+
+def _resolve_direct_overlaps_boundary_aware(proposals, shape, core_weight=0.2):
+    """Resolve per-pixel ownership among overlapping direct masks by confidence+core score."""
+    if not proposals:
+        return np.zeros(shape, dtype=np.int32)
+    best_score = np.full(shape, -1e9, dtype=np.float32)
+    best_tid = np.zeros(shape, dtype=np.int32)
+    for tid, mask, base_score in proposals:
+        if not np.any(mask):
+            continue
+        core = _mask_core_score_map(mask)
+        pix_score = float(base_score) + float(core_weight) * core
+        take = np.logical_and(mask, pix_score > best_score)
+        if np.any(take):
+            best_score[take] = pix_score[take]
+            best_tid[take] = int(tid)
+    return best_tid
+
 def _select_best_unoccupied_structure(pred_mask, slice_mask, occupied_mask, max_centroid_dist=40.0, slice_cache=None):
     if slice_cache is None:
         slice_cache = _build_slice_instance_cache(slice_mask)
@@ -133,7 +180,8 @@ def recover_track_gaps(track, image_stack, flow_stack=None, fill_edges=False, so
 def relabel_tracks(tracks, image_stack, flow_stack=None, min_track_len=2, min_conf=0.05,
                    fill_edges=False, return_track_labels=True, source_masks=None, avoid_occupied=True, min_free_fraction=0.25,
                    prob_stack=None, prob_occupancy_thresh=0.5, show_progress=False,
-                   skip_gap_reconstruction=False, recon_workers=1):
+                   skip_gap_reconstruction=False, recon_workers=1, direct_overlap_mode="clip",
+                   boundary_overlap_core_weight=0.2):
     zcount = len(image_stack)
     out = [np.zeros(image_stack[0].shape[:2], dtype=np.int32) for _ in range(zcount)]
     track_labels = np.zeros((zcount, *image_stack[0].shape[:2]), dtype=np.int32) if return_track_labels else None
@@ -166,22 +214,69 @@ def relabel_tracks(tracks, image_stack, flow_stack=None, min_track_len=2, min_co
 
     locked_direct = [np.zeros(image_stack[0].shape[:2], dtype=bool) for _ in range(zcount)]
     track_to_tid = {}
+    direct_overlap_mode = str(direct_overlap_mode).lower()
+    if direct_overlap_mode not in {"clip", "boundary_aware"}:
+        direct_overlap_mode = "clip"
+
+    # For boundary-aware mode, collect per-slice proposals and arbitrate overlaps.
+    proposal_by_z = [[] for _ in range(zcount)]
+
     direct_iter = tqdm(kept, desc="[semi3d:stage2] placing direct masks", unit="track") if show_progress else kept
-    for tr, _ in direct_iter:
+    for tr, conf in direct_iter:
         tid = next_id
         next_id += 1
         track_to_tid[id(tr)] = tid
         for n in tr.nodes:
             src = None if source_masks is None else source_masks[n.z]
             nmask = _node_mask(n, image_stack[0].shape[:2], slice_mask=src)
+            if not np.any(nmask):
+                continue
             force_keep_first_slice = (n.z == 0)
-            nmask_use = nmask if (force_keep_first_slice or not avoid_occupied) else np.logical_and(nmask, out[n.z] == 0)
+
+            if force_keep_first_slice or not avoid_occupied:
+                nmask_use = nmask
+            elif direct_overlap_mode == "boundary_aware":
+                # In boundary-aware mode, defer overlap decisions to per-pixel arbitration.
+                if not _has_sufficient_mask_core(nmask):
+                    continue
+                proposal_by_z[n.z].append((tid, nmask, float(conf)))
+                continue
+            else:
+                free = np.logical_and(nmask, out[n.z] == 0)
+                free_fraction = float(free.sum() / (nmask.sum() + 1e-6))
+                # Avoid writing thin boundary remnants when almost all direct pixels
+                # are already occupied by earlier, higher-confidence tracks.
+                if free_fraction < float(min_free_fraction):
+                    continue
+                # Also reject ring/sliver leftovers that have little interior core.
+                if not _has_sufficient_mask_core(free):
+                    continue
+                nmask_use = free
+
             if not np.any(nmask_use):
                 continue
             out[n.z][nmask_use] = tid
             locked_direct[n.z][nmask_use] = True
             if track_labels is not None:
                 track_labels[n.z][nmask_use] = tid
+
+    if avoid_occupied and direct_overlap_mode == "boundary_aware":
+        for z in range(zcount):
+            proposals = proposal_by_z[z]
+            if not proposals:
+                continue
+            assigned = _resolve_direct_overlaps_boundary_aware(
+                proposals,
+                image_stack[0].shape[:2],
+                core_weight=float(boundary_overlap_core_weight),
+            )
+            use = assigned > 0
+            if not np.any(use):
+                continue
+            out[z][use] = assigned[use]
+            locked_direct[z][use] = True
+            if track_labels is not None:
+                track_labels[z][use] = assigned[use]
 
     if skip_gap_reconstruction:
         return out, track_labels, reconstructed_flags, kept

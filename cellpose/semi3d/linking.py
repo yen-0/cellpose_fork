@@ -641,20 +641,12 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
             tr.track_id for tr in active if tr.nodes and tr.nodes[-1].z in (z - 1, z - 2)
         } - filled_track_ids
 
-        # 4) Merge fallback as a separate iterative loop after linking is done.
-        if hanging_track_ids:
-            LOGGER.info(
-                "semi3d merge bypassed at z=%d because hanging graphs remain: %s",
-                z,
-                sorted(hanging_track_ids),
-            )
-        else:
+        def _run_merge_fallback(allow_anchor_overlap_only: bool = False):
+            """Attempt to merge unused same-slice fragments into already-assigned tracks."""
             recent_active = [
                 tr for tr in active if tr.nodes and tr.nodes[-1].z in (z - 1, z - 2)
             ]
-            merge_round = 0
             while True:
-                merge_round += 1
                 merge_candidates = []
 
                 def _merge_candidates_for_assignment(entry):
@@ -686,15 +678,20 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
 
                         iou_b_prev = _node_iou_b(anchor, n2)
                         raw_iou_prev = _node_raw_iou(anchor, n2)
-                        iou_b_two, raw_iou_two = 0.0, 0.0
+                        inter_prev = _node_raw_intersection(anchor, n2)
+                        iou_b_two, raw_iou_two, inter_two = 0.0, 0.0, 0
                         if tr.nodes and len(tr.nodes) >= 2:
                             for old in tr.nodes[:-1][::-1]:
                                 if old.z == (z - 2):
                                     iou_b_two = _node_iou_b(old, n2)
                                     raw_iou_two = _node_raw_iou(old, n2)
+                                    inter_two = _node_raw_intersection(old, n2)
                                     break
                         iou_b = max(iou_b_prev, iou_b_two)
                         raw_iou = max(raw_iou_prev, raw_iou_two)
+                        inter_raw = max(inter_prev, inter_two)
+                        if allow_anchor_overlap_only and inter_raw <= 0:
+                            continue
 
                         alt_best_iou_a = 0.0
                         for other in recent_active:
@@ -742,6 +739,17 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                     merged_any = True
                 if not merged_any:
                     break
+
+        # 4) Merge fallback as a separate iterative loop after linking is done.
+        if hanging_track_ids:
+            LOGGER.info(
+                "semi3d merge bypassed at z=%d because hanging graphs remain: %s",
+                z,
+                sorted(hanging_track_ids),
+            )
+            _run_merge_fallback(allow_anchor_overlap_only=True)
+        else:
+            _run_merge_fallback(allow_anchor_overlap_only=False)
 
         for tr, _, _, gap in assigned:
             skips = max(0, gap - 1)
