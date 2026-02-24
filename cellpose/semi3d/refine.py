@@ -95,9 +95,18 @@ def relabel_tracks(tracks, image_stack, flow_stack=None, min_track_len=2, min_co
     next_id = 1
     kept = []
 
+    image_max = float(np.max(image_stack))
+    gray_stack = [im.mean(axis=-1) if getattr(im, "ndim", 2) == 3 else im for im in image_stack]
+
     track_iter = tqdm(tracks, desc="[semi3d:stage2] filtering tracks", unit="track") if show_progress else tracks
     for tr in track_iter:
-        conf = track_confidence(tr, image_stack, source_masks=source_masks)
+        conf = track_confidence(
+            tr,
+            image_stack,
+            source_masks=source_masks,
+            image_max=image_max,
+            gray_stack=gray_stack,
+        )
         has_first_slice_node = any(n.z == 0 for n in tr.nodes)
         if not has_first_slice_node and (len(tr.nodes) < min_track_len or conf < min_conf):
             continue
