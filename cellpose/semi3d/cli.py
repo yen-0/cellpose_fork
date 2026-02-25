@@ -257,21 +257,40 @@ def _run_stage2(args):
         stage1_prob = io.imread(prob_path).astype(np.float32)
 
     LOGGER.info("[semi3d:stage2] linking tracks")
-    tracks = build_association_tracks(
-        per_slice_masks,
-        link_iou=args.link_iou,
-        link_dist=args.link_dist,
-        size_tolerance=args.size_tolerance,
-        max_gap=args.max_gap,
-        gpu_prefilter=args.link_gpu_prefilter,
-        link_workers=args.link_workers,
-        merge_dist=args.merge_dist,
-        merge_iou_b_min=args.merge_iou_b_min,
-        merge_competition_margin=args.merge_competition_margin,
-        short_track_merge_len=args.short_track_merge_len,
-        short_track_merge_iou_b_min=args.short_track_merge_iou_b_min,
-        show_progress=True,
-    )
+    stage2_debug_steps = None
+    if getattr(args, "save_stage2_steps", True):
+        tracks, stage2_debug_steps = build_association_tracks(
+            per_slice_masks,
+            link_iou=args.link_iou,
+            link_dist=args.link_dist,
+            size_tolerance=args.size_tolerance,
+            max_gap=args.max_gap,
+            gpu_prefilter=args.link_gpu_prefilter,
+            link_workers=args.link_workers,
+            merge_dist=args.merge_dist,
+            merge_iou_b_min=args.merge_iou_b_min,
+            merge_competition_margin=args.merge_competition_margin,
+            short_track_merge_len=args.short_track_merge_len,
+            short_track_merge_iou_b_min=args.short_track_merge_iou_b_min,
+            show_progress=True,
+            return_debug_steps=True,
+        )
+    else:
+        tracks = build_association_tracks(
+            per_slice_masks,
+            link_iou=args.link_iou,
+            link_dist=args.link_dist,
+            size_tolerance=args.size_tolerance,
+            max_gap=args.max_gap,
+            gpu_prefilter=args.link_gpu_prefilter,
+            link_workers=args.link_workers,
+            merge_dist=args.merge_dist,
+            merge_iou_b_min=args.merge_iou_b_min,
+            merge_competition_margin=args.merge_competition_margin,
+            short_track_merge_len=args.short_track_merge_len,
+            short_track_merge_iou_b_min=args.short_track_merge_iou_b_min,
+            show_progress=True,
+        )
 
     if getattr(args, "save_stage2_steps", True):
         linked = np.zeros_like(per_slice_masks, dtype=np.int32)
@@ -282,6 +301,28 @@ def _run_stage2(args):
                 if np.any(nmask):
                     linked[n.z][nmask] = tid
         io.imsave(os.path.join(args.output, "semi3d_stage2_linked_tracks.tif"), linked)
+        if stage2_debug_steps is not None:
+            io.imsave(os.path.join(args.output, "semi3d_stage2_step1_iou_adjacent.tif"), stage2_debug_steps["step1_iou_adjacent"].astype(np.int32))
+            io.imsave(os.path.join(args.output, "semi3d_stage2_step2_iou_z2.tif"), stage2_debug_steps["step2_iou_z2"].astype(np.int32))
+            io.imsave(os.path.join(args.output, "semi3d_stage2_step3_iou_fallback.tif"), stage2_debug_steps["step3_iou_fallback"].astype(np.int32))
+
+            pre_merge = np.zeros_like(per_slice_masks, dtype=np.int32)
+            for tid, tr in enumerate(stage2_debug_steps["step4_post_merge_fallback_tracks"], start=1):
+                for n in tr.nodes:
+                    src = per_slice_masks[n.z]
+                    nmask = n.full_mask(stack[0].shape[:2], slice_mask=src)
+                    if np.any(nmask):
+                        pre_merge[n.z][nmask] = tid
+            io.imsave(os.path.join(args.output, "semi3d_stage2_step4_post_merge_tracks.tif"), pre_merge)
+
+            post_short_merge = np.zeros_like(per_slice_masks, dtype=np.int32)
+            for tid, tr in enumerate(stage2_debug_steps["step5_post_short_track_merge_tracks"], start=1):
+                for n in tr.nodes:
+                    src = per_slice_masks[n.z]
+                    nmask = n.full_mask(stack[0].shape[:2], slice_mask=src)
+                    if np.any(nmask):
+                        post_short_merge[n.z][nmask] = tid
+            io.imsave(os.path.join(args.output, "semi3d_stage2_step5_post_short_track_merge.tif"), post_short_merge)
 
     if args.refiner_model is not None:
         if not os.path.exists(args.refiner_model):

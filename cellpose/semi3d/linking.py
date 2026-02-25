@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+import copy
 from typing import Dict, List, Optional, Tuple
 import logging
 import os
@@ -454,10 +455,19 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                              max_gap=3, gpu_prefilter=False, merge_dist=12.0, merge_iou_b_min=0.35,
                              merge_competition_margin=0.1, short_track_merge_len=2,
                              short_track_merge_iou_b_min=None,
-                             show_progress=False, link_workers=1):
+                             show_progress=False, link_workers=1,
+                             return_debug_steps=False):
     tracks: List[Track] = []
     active: List[Track] = []
     next_track_id = 1
+
+    debug_steps = None
+    if return_debug_steps:
+        debug_steps = {
+            "step1_iou_adjacent": np.zeros_like(slice_masks, dtype=np.int32),
+            "step2_iou_z2": np.zeros_like(slice_masks, dtype=np.int32),
+            "step3_iou_fallback": np.zeros_like(slice_masks, dtype=np.int32),
+        }
 
     z_iter = tqdm(range(len(slice_masks)), desc="[semi3d:stage2] linking slices", unit="slice") if show_progress else range(len(slice_masks))
     for z in z_iter:
@@ -550,6 +560,9 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
             assigned.append((tr, node, anchor, 1))
             used.add(ci)
             used_prev_tracks.add(ti)
+            if debug_steps is not None:
+                nmask = node.full_mask(slice_masks[z].shape, slice_mask=slice_masks[z])
+                debug_steps["step1_iou_adjacent"][z][nmask] = tr.track_id
 
         # 2) Leftovers attach to z-2 anchors using IoU-only score.
         leftovers_stage2 = [i for i in range(len(current_nodes)) if i not in used]
@@ -590,6 +603,9 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
             assigned.append((tr, node, anchor, 2))
             used.add(i)
             taken_z2_tracks.add(tr.track_id)
+            if debug_steps is not None:
+                nmask = node.full_mask(slice_masks[z].shape, slice_mask=slice_masks[z])
+                debug_steps["step2_iou_z2"][z][nmask] = tr.track_id
 
         # 3) If still unmatched, try any remaining graph via IoU-only score before merge/new track.
         leftovers = [i for i in range(len(current_nodes)) if i not in used]
@@ -632,6 +648,9 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                 best_tr.gap_hist[skips] = best_tr.gap_hist.get(skips, 0) + 1
             used.add(i)
             taken_fallback_tracks.add(best_tr.track_id)
+            if debug_steps is not None:
+                nmask = node.full_mask(slice_masks[z].shape, slice_mask=slice_masks[z])
+                debug_steps["step3_iou_fallback"][z][nmask] = best_tr.track_id
 
         filled_track_ids = {tr.track_id for tr, _, _, _ in assigned}
         filled_track_ids.update(
@@ -799,6 +818,8 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
 
         active = [t for t in active if z - t.nodes[-1].z < max_gap]
 
+    tracks_before_short_merge = copy.deepcopy(tracks) if return_debug_steps else None
+
     # 5) Post-link short-track merge pass: merge newly-created short tracks into larger tracks
     # using raw IoU_B (raw pixel intersections) on overlapping z slices.
     if short_track_merge_iou_b_min is None:
@@ -864,5 +885,10 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
 
     if removed_track_ids:
         tracks = [tr for tr in tracks if tr.track_id not in removed_track_ids]
+
+    if return_debug_steps:
+        debug_steps["step4_post_merge_fallback_tracks"] = tracks_before_short_merge
+        debug_steps["step5_post_short_track_merge_tracks"] = copy.deepcopy(tracks)
+        return tracks, debug_steps
 
     return tracks
