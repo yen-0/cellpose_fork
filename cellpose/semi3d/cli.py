@@ -272,6 +272,8 @@ def _run_stage2(args):
             merge_competition_margin=args.merge_competition_margin,
             short_track_merge_len=args.short_track_merge_len,
             short_track_merge_iou_b_min=args.short_track_merge_iou_b_min,
+            exclude_edge_touching=getattr(args, "stage2_exclude_edge_touching", False),
+            allow_new_tracks_after_first_slice=not getattr(args, "stage2_no_new_graphs", False),
             show_progress=True,
             return_debug_steps=True,
         )
@@ -289,6 +291,8 @@ def _run_stage2(args):
             merge_competition_margin=args.merge_competition_margin,
             short_track_merge_len=args.short_track_merge_len,
             short_track_merge_iou_b_min=args.short_track_merge_iou_b_min,
+            exclude_edge_touching=getattr(args, "stage2_exclude_edge_touching", False),
+            allow_new_tracks_after_first_slice=not getattr(args, "stage2_no_new_graphs", False),
             show_progress=True,
         )
 
@@ -455,6 +459,8 @@ def run_from_cellpose_args(args):
             stage1_use_defog_prob_for_cellpose=not args.semi3d_disable_stage1_use_defog_prob_for_cellpose,
             stage1_prob_boundary_sigma=args.semi3d_stage1_prob_boundary_sigma,
             stage1_prob_boundary_strength=args.semi3d_stage1_prob_boundary_strength,
+            stage2_exclude_edge_touching=args.semi3d_stage2_exclude_edge_touching,
+            stage2_no_new_graphs=args.semi3d_stage2_no_new_graphs,
             save_stage2_steps=not args.semi3d_disable_save_stage2_steps,
         )
         total, kept = _run_inference(semi_args)
@@ -527,6 +533,8 @@ def run_from_cellpose_args(args):
             stage1_prob=args.semi3d_stage1_prob,
             use_prob_occupancy=args.semi3d_use_prob_occupancy,
             prob_occupancy_thresh=args.semi3d_prob_occupancy_thresh,
+            stage2_exclude_edge_touching=args.semi3d_stage2_exclude_edge_touching,
+            stage2_no_new_graphs=args.semi3d_stage2_no_new_graphs,
             save_stage2_steps=not args.semi3d_disable_save_stage2_steps,
         )
         total, kept = _run_stage2(semi_args)

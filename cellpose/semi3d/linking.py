@@ -251,7 +251,7 @@ def _merge_nodes(nodes: List[InstanceNode]) -> InstanceNode:
     return node
 
 
-def _extract_nodes_for_slice(slice_mask: np.ndarray, z: int) -> List[InstanceNode]:
+def _extract_nodes_for_slice(slice_mask: np.ndarray, z: int, exclude_edge_touching: bool = False) -> List[InstanceNode]:
     nodes: List[InstanceNode] = []
     ids = np.unique(slice_mask)
     ids = ids[ids > 0]
@@ -261,6 +261,11 @@ def _extract_nodes_for_slice(slice_mask: np.ndarray, z: int) -> List[InstanceNod
             continue
         y0, y1 = int(ys.min()), int(ys.max()) + 1
         x0, x1 = int(xs.min()), int(xs.max()) + 1
+        if exclude_edge_touching:
+            h, w = slice_mask.shape[:2]
+            touches_edge = (y0 == 0) or (x0 == 0) or (y1 >= h) or (x1 >= w)
+            if touches_edge:
+                continue
         crop = (slice_mask[y0:y1, x0:x1] == inst_id)
         centroid = np.array([ys.mean(), xs.mean()], dtype=np.float32)
         nodes.append(InstanceNode(z=z, instance_id=int(inst_id), bbox=(y0, y1, x0, x1), centroid=centroid,
@@ -456,6 +461,8 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                              merge_competition_margin=0.1, short_track_merge_len=2,
                              short_track_merge_iou_b_min=None,
                              show_progress=False, link_workers=1,
+                             exclude_edge_touching=False,
+                             allow_new_tracks_after_first_slice=True,
                              return_debug_steps=False):
     tracks: List[Track] = []
     active: List[Track] = []
@@ -471,7 +478,7 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
 
     z_iter = tqdm(range(len(slice_masks)), desc="[semi3d:stage2] linking slices", unit="slice") if show_progress else range(len(slice_masks))
     for z in z_iter:
-        current_nodes = _extract_nodes_for_slice(slice_masks[z], z)
+        current_nodes = _extract_nodes_for_slice(slice_masks[z], z, exclude_edge_touching=exclude_edge_touching)
         used = set()
 
         if z == 0:
@@ -778,6 +785,13 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
 
         for i, node in enumerate(current_nodes):
             if i not in used:
+                if z > 0 and not allow_new_tracks_after_first_slice:
+                    LOGGER.info(
+                        "semi3d dropping unmatched node at z=%d inst=%d because spawning new graphs is disabled",
+                        z,
+                        node.instance_id,
+                    )
+                    continue
                 if active:
                     diagnostics = []
                     for tr in active:

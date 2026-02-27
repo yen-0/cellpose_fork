@@ -143,6 +143,8 @@ Useful flags:
 - `--semi3d_merge_dist` (merge split detections of the same cell within a slice)
 - `--semi3d_border_exclusion_px`
 - `--semi3d_fill_edges` (fills first/last slices too)
+- `--semi3d_stage2_exclude_edge_touching` (drop any stage2 instance touching image edge)
+- `--semi3d_stage2_no_new_graphs` (only continue graphs seeded on the first slice)
 - `--semi3d_allow_overlap_recon` (disable occupancy-aware reconstruction blocking)
 - `--semi3d_recon_min_free_fraction` (reject impossible reconstructions that mostly overlap established cells)
 - `--semi3d_use_prob_occupancy`, `--semi3d_prob_occupancy_thresh` (use stage1 probability map as occupancy prior in stage2)
