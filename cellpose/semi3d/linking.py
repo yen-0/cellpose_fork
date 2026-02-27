@@ -401,6 +401,12 @@ def _compute_pairwise_distances(active_tracks: List[Track], nodes: List[Instance
         return np.linalg.norm(a_cent[:, None, :] - c_cent[None, :, :], axis=2).astype(np.float32)
 
 
+def _batched(items, batch_size: int):
+    batch_size = max(1, int(batch_size))
+    for i in range(0, len(items), batch_size):
+        yield items[i:i + batch_size]
+
+
 def _pair_candidates_for_track(track_idx: int, anchor: InstanceNode, current_nodes: List[InstanceNode],
                                link_iou: float):
     candidates = []
@@ -569,11 +575,15 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
             return node_idx, best
 
         order = sorted(range(len(current_nodes)), key=lambda i: current_nodes[i].area, reverse=True)
+        batch_size = max(64, min(512, len(order) // max(1, worker_count * 2) if order else 64))
+        scored = []
         if worker_count > 1 and len(order) > 1:
             with ThreadPoolExecutor(max_workers=worker_count) as ex:
-                scored = list(ex.map(_decayed_match_for_node_index, order))
+                for batch in _batched(order, batch_size):
+                    scored.extend(ex.map(_decayed_match_for_node_index, batch))
         else:
-            scored = [_decayed_match_for_node_index(i) for i in order]
+            for batch in _batched(order, batch_size):
+                scored.extend(_decayed_match_for_node_index(i) for i in batch)
 
         scored.sort(key=lambda t: (-1.0 if t[1] is None else -float(t[1][0]), t[0]))
         for i, best in scored:
@@ -672,13 +682,16 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                         local.append((merge_score, tr, anchor, base_node, j))
                     return local
 
+                merge_batch_size = max(16, min(128, len(assigned) // max(1, worker_count) if assigned else 16))
                 if worker_count > 1 and len(assigned) > 1 and len(current_nodes) > 0:
                     with ThreadPoolExecutor(max_workers=worker_count) as ex:
-                        for local in ex.map(_merge_candidates_for_assignment, assigned):
-                            merge_candidates.extend(local)
+                        for batch in _batched(assigned, merge_batch_size):
+                            for local in ex.map(_merge_candidates_for_assignment, batch):
+                                merge_candidates.extend(local)
                 else:
-                    for entry in assigned:
-                        merge_candidates.extend(_merge_candidates_for_assignment(entry))
+                    for batch in _batched(assigned, merge_batch_size):
+                        for entry in batch:
+                            merge_candidates.extend(_merge_candidates_for_assignment(entry))
 
                 if not merge_candidates:
                     break
