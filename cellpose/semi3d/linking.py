@@ -477,12 +477,8 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
 
         assigned = []
 
-        # 1) Primary linking by IoU-only score (no distance ranking).
-        prev_tracks = [tr for tr in active if tr.nodes and tr.nodes[-1].z == (z - 1)]
-        pair_candidates = []
-        prefilter_map = None
-        if gpu_prefilter:
-            prefilter_map = _gpu_prefilter_candidates(prev_tracks, current_nodes, link_dist, size_tolerance)
+        # 1-3) Node-centric linking: iterate every current mask, score against existing graphs
+        # with IoU + distance, and use exponential decay over past slices to keep track state.
         worker_count = int(link_workers) if link_workers is not None else 1
         global _LINK_WORKERS_AUTO_LOGGED, _LINK_WORKERS_MULTICORE_LOGGED, _LINK_WORKERS_SINGLECORE_LOGGED
         if worker_count <= 0:
@@ -494,157 +490,88 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                     worker_count,
                 )
                 _LINK_WORKERS_AUTO_LOGGED = True
-        if prefilter_map is not None and worker_count > 1 and not _LINK_WORKERS_MULTICORE_LOGGED:
-            LOGGER.info(
-                "[semi3d:stage2] GPU prefilter is active; running multicore link candidate scoring with workers=%d",
-                worker_count,
-            )
-            _LINK_WORKERS_MULTICORE_LOGGED = True
-
         if worker_count > 1 and not _LINK_WORKERS_MULTICORE_LOGGED:
-            LOGGER.info("[semi3d:stage2] Multicore link candidate scoring enabled with workers=%d", worker_count)
+            LOGGER.info("[semi3d:stage2] Multicore link scoring enabled with workers=%d", worker_count)
             _LINK_WORKERS_MULTICORE_LOGGED = True
-        elif worker_count <= 1 and prefilter_map is None and not _LINK_WORKERS_SINGLECORE_LOGGED:
-            LOGGER.info("[semi3d:stage2] Link candidate scoring running single-core (workers=%d)", worker_count)
+        elif worker_count <= 1 and not _LINK_WORKERS_SINGLECORE_LOGGED:
+            LOGGER.info("[semi3d:stage2] Link scoring running single-core (workers=%d)", worker_count)
             _LINK_WORKERS_SINGLECORE_LOGGED = True
-        if worker_count > 1 and len(prev_tracks) > 1 and len(current_nodes) > 0:
-            with ThreadPoolExecutor(max_workers=worker_count) as ex:
-                futures = []
-                for ti, tr in enumerate(prev_tracks):
-                    candidate_ids = None if prefilter_map is None else prefilter_map.get(ti, [])
-                    candidates = current_nodes if candidate_ids is None else [current_nodes[j] for j in candidate_ids]
-                    futures.append((candidate_ids, ex.submit(
-                        _pair_candidates_for_track,
-                        ti,
-                        tr.nodes[-1],
-                        candidates,
-                        link_iou,
-                    )))
 
-                for candidate_ids, fut in futures:
-                    local_candidates = fut.result()
-                    if candidate_ids is not None:
-                        local_candidates = [
-                            (score, raw_iou, iou_a, t_idx, candidate_ids[ci], anchor)
-                            for score, raw_iou, iou_a, t_idx, ci, anchor in local_candidates
-                        ]
-                    pair_candidates.extend(local_candidates)
-        else:
-            for ti, tr in enumerate(prev_tracks):
-                candidate_ids = None if prefilter_map is None else prefilter_map.get(ti, [])
-                candidates = current_nodes if candidate_ids is None else [current_nodes[j] for j in candidate_ids]
-                local_candidates = _pair_candidates_for_track(ti, tr.nodes[-1], candidates, link_iou)
-                if candidate_ids is not None:
-                    local_candidates = [
-                        (score, raw_iou, iou_a, t_idx, candidate_ids[ci], anchor)
-                        for score, raw_iou, iou_a, t_idx, ci, anchor in local_candidates
-                    ]
-                pair_candidates.extend(local_candidates)
+        recent_active = [tr for tr in active if tr.nodes and (z - tr.nodes[-1].z) <= max_gap]
+        taken_track_ids = set()
 
-        pair_candidates.sort(reverse=True)
-        used_prev_tracks = set()
-        for score, raw_iou, iou_a, ti, ci, anchor in pair_candidates:
-            if ti in used_prev_tracks or ci in used:
+        def _decayed_match_for_node(node):
+            best = None
+            for tr in recent_active:
+                if tr.track_id in taken_track_ids:
+                    continue
+                weighted_iou = 0.0
+                weighted_dist = 0.0
+                weight_sum = 0.0
+                best_anchor = None
+                best_gap = None
+                best_iou = -1.0
+
+                for anchor in _recent_track_nodes(tr, depth=4):
+                    gap = node.z - anchor.z
+                    if gap < 1 or gap > max_gap:
+                        continue
+                    iou_a, _ = _node_overlap_scores(anchor, node)
+                    raw_iou = _node_raw_iou(anchor, node)
+                    iou_score = max(iou_a, raw_iou)
+
+                    dist = float(np.linalg.norm(node.centroid - anchor.centroid))
+                    dist_gate = link_dist * (1.0 + min(1.0, 0.5 * (gap - 1)))
+                    area_gate = _distance_gate_from_area(node.area, link_dist, scale=2.0)
+                    allowed_dist = max(1.0, min(1.5 * dist_gate, area_gate))
+                    dist_score = max(0.0, 1.0 - (dist / allowed_dist))
+
+                    w = float(0.65 ** (gap - 1))
+                    weighted_iou += w * iou_score
+                    weighted_dist += w * dist_score
+                    weight_sum += w
+
+                    if iou_score > best_iou:
+                        best_iou = iou_score
+                        best_anchor = anchor
+                        best_gap = gap
+
+                if weight_sum <= 0.0 or best_anchor is None:
+                    continue
+
+                avg_iou = weighted_iou / weight_sum
+                avg_dist = weighted_dist / weight_sum
+                combined = 0.8 * avg_iou + 0.2 * avg_dist
+
+                min_combined = max(0.05, 0.7 * float(link_iou))
+                if (best_iou < float(link_iou)) and (combined < min_combined):
+                    continue
+
+                if best is None or combined > best[0]:
+                    best = (combined, tr, best_anchor, best_gap, best_iou)
+            return best
+
+        order = sorted(range(len(current_nodes)), key=lambda i: current_nodes[i].area, reverse=True)
+        for i in order:
+            if i in used:
                 continue
-            tr = prev_tracks[ti]
-            node = current_nodes[ci]
+            node = current_nodes[i]
+            best = _decayed_match_for_node(node)
+            if best is None:
+                continue
+            _, tr, anchor, gap, best_iou = best
+            if tr.track_id in taken_track_ids:
+                continue
+
             tr.nodes.append(node)
-            tr.links.append(max(iou_a, raw_iou))
-            assigned.append((tr, node, anchor, 1))
-            used.add(ci)
-            used_prev_tracks.add(ti)
+            tr.links.append(float(best_iou))
+            assigned.append((tr, node, anchor, int(gap)))
+            used.add(i)
+            taken_track_ids.add(tr.track_id)
+
             if debug_steps is not None:
                 nmask = node.full_mask(slice_masks[z].shape, slice_mask=slice_masks[z])
                 debug_steps["step1_iou_adjacent"][z][nmask] = tr.track_id
-
-        # 2) Leftovers attach to z-2 anchors using IoU-only score.
-        leftovers_stage2 = [i for i in range(len(current_nodes)) if i not in used]
-
-        def _best_z2_for_node(i):
-            node = current_nodes[i]
-            best = None
-            for tr in active:
-                last = tr.nodes[-1]
-                if last.z != (z - 2):
-                    continue
-                iou_a, _ = _node_overlap_scores(last, node)
-                raw_iou = _node_raw_iou(last, node)
-                score = max(iou_a, raw_iou)
-                if score < float(link_iou):
-                    continue
-                if best is None or score > best[2]:
-                    best = (tr, last, score)
-            return i, best
-
-        if worker_count > 1 and len(leftovers_stage2) > 1:
-            with ThreadPoolExecutor(max_workers=worker_count) as ex:
-                z2_best = list(ex.map(_best_z2_for_node, leftovers_stage2))
-        else:
-            z2_best = [_best_z2_for_node(i) for i in leftovers_stage2]
-
-        z2_best.sort(key=lambda t: (-1.0 if t[1] is None else -float(t[1][2]), t[0]))
-        taken_z2_tracks = set()
-        for i, best in z2_best:
-            if i in used or best is None:
-                continue
-            tr, anchor, score = best
-            if tr.track_id in taken_z2_tracks:
-                continue
-            node = current_nodes[i]
-            tr.nodes.append(node)
-            tr.links.append(score)
-            assigned.append((tr, node, anchor, 2))
-            used.add(i)
-            taken_z2_tracks.add(tr.track_id)
-            if debug_steps is not None:
-                nmask = node.full_mask(slice_masks[z].shape, slice_mask=slice_masks[z])
-                debug_steps["step2_iou_z2"][z][nmask] = tr.track_id
-
-        # 3) If still unmatched, try any remaining graph via IoU-only score before merge/new track.
-        leftovers = [i for i in range(len(current_nodes)) if i not in used]
-
-        def _best_any_for_node(i):
-            node = current_nodes[i]
-            best_tr, best_anchor, best_gap, best_score = None, None, None, -1.0
-            for tr in active:
-                anchor_metrics = _best_anchor_metrics(tr, node, max_gap=max_gap, depth=3)
-                if anchor_metrics is None:
-                    continue
-                anchor, gap, _, iou_a, _, _ = anchor_metrics
-                raw_iou = _node_raw_iou(anchor, node)
-                score = max(iou_a, raw_iou)
-                if score < float(link_iou):
-                    continue
-                if score > best_score:
-                    best_tr, best_anchor, best_gap, best_score = tr, anchor, gap, score
-            return i, best_tr, best_anchor, best_gap, best_score
-
-        if worker_count > 1 and len(leftovers) > 1:
-            with ThreadPoolExecutor(max_workers=worker_count) as ex:
-                fallback_best = list(ex.map(_best_any_for_node, leftovers))
-        else:
-            fallback_best = [_best_any_for_node(i) for i in leftovers]
-
-        fallback_best.sort(key=lambda t: (-float(t[4]), t[0]))
-        taken_fallback_tracks = set()
-        for i, best_tr, best_anchor, best_gap, best_score in fallback_best:
-            if i in used or best_tr is None:
-                continue
-            if best_tr.track_id in taken_fallback_tracks:
-                continue
-            node = current_nodes[i]
-            best_tr.nodes.append(node)
-            best_tr.links.append(best_score)
-            skips = max(0, best_gap - 1)
-            best_tr.gap_bridges += skips
-            if skips > 0:
-                best_tr.gap_hist[skips] = best_tr.gap_hist.get(skips, 0) + 1
-            used.add(i)
-            taken_fallback_tracks.add(best_tr.track_id)
-            if debug_steps is not None:
-                nmask = node.full_mask(slice_masks[z].shape, slice_mask=slice_masks[z])
-                debug_steps["step3_iou_fallback"][z][nmask] = best_tr.track_id
-
         filled_track_ids = {tr.track_id for tr, _, _, _ in assigned}
         filled_track_ids.update(
             tr.track_id for tr in active if tr.nodes and tr.nodes[-1].z == z
