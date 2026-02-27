@@ -500,11 +500,28 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
         recent_active = [tr for tr in active if tr.nodes and (z - tr.nodes[-1].z) <= max_gap]
         taken_track_ids = set()
 
-        def _decayed_match_for_node(node):
+        prefilter_map = None
+        node_to_track_indices = None
+        if gpu_prefilter:
+            prefilter_map = _gpu_prefilter_candidates(recent_active, current_nodes, link_dist, size_tolerance)
+            if prefilter_map is not None:
+                node_to_track_indices = {i: [] for i in range(len(current_nodes))}
+                for ti, node_ids in prefilter_map.items():
+                    for ni in node_ids:
+                        if ni in node_to_track_indices:
+                            node_to_track_indices[ni].append(ti)
+
+        def _candidate_track_indices_for_node(node_idx: int):
+            if node_to_track_indices is None:
+                return list(range(len(recent_active)))
+            return node_to_track_indices.get(node_idx, [])
+
+        def _decayed_match_for_node_index(node_idx: int):
+            node = current_nodes[node_idx]
             best = None
-            for tr in recent_active:
-                if tr.track_id in taken_track_ids:
-                    continue
+            candidate_tracks = _candidate_track_indices_for_node(node_idx)
+            for ti in candidate_tracks:
+                tr = recent_active[ti]
                 weighted_iou = 0.0
                 weighted_dist = 0.0
                 weight_sum = 0.0
@@ -549,20 +566,24 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
 
                 if best is None or combined > best[0]:
                     best = (combined, tr, best_anchor, best_gap, best_iou)
-            return best
+            return node_idx, best
 
         order = sorted(range(len(current_nodes)), key=lambda i: current_nodes[i].area, reverse=True)
-        for i in order:
-            if i in used:
-                continue
-            node = current_nodes[i]
-            best = _decayed_match_for_node(node)
-            if best is None:
+        if worker_count > 1 and len(order) > 1:
+            with ThreadPoolExecutor(max_workers=worker_count) as ex:
+                scored = list(ex.map(_decayed_match_for_node_index, order))
+        else:
+            scored = [_decayed_match_for_node_index(i) for i in order]
+
+        scored.sort(key=lambda t: (-1.0 if t[1] is None else -float(t[1][0]), t[0]))
+        for i, best in scored:
+            if i in used or best is None:
                 continue
             _, tr, anchor, gap, best_iou = best
             if tr.track_id in taken_track_ids:
                 continue
 
+            node = current_nodes[i]
             tr.nodes.append(node)
             tr.links.append(float(best_iou))
             assigned.append((tr, node, anchor, int(gap)))
