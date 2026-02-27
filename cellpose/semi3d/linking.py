@@ -152,21 +152,8 @@ def _node_raw_iou(node_a: InstanceNode, node_b: InstanceNode,
                   slice_mask_a: Optional[np.ndarray] = None,
                   slice_mask_b: Optional[np.ndarray] = None) -> float:
     """Raw binary-mask IoU on true instance pixels (not bbox IoU)."""
-    ay0, ay1, ax0, ax1 = node_a.bbox
-    by0, by1, bx0, bx1 = node_b.bbox
-    y0, y1 = min(ay0, by0), max(ay1, by1)
-    x0, x1 = min(ax0, bx0), max(ax1, bx1)
-
-    a_crop = _node_mask_crop(node_a, slice_mask_a)
-    b_crop = _node_mask_crop(node_b, slice_mask_b)
-
-    a_full = np.zeros((y1 - y0, x1 - x0), dtype=bool)
-    b_full = np.zeros((y1 - y0, x1 - x0), dtype=bool)
-    a_full[ay0 - y0:ay1 - y0, ax0 - x0:ax1 - x0] = a_crop
-    b_full[by0 - y0:by1 - y0, bx0 - x0:bx1 - x0] = b_crop
-
-    inter = np.logical_and(a_full, b_full).sum()
-    union = np.logical_or(a_full, b_full).sum()
+    inter = _node_raw_intersection(node_a, node_b, slice_mask_a, slice_mask_b)
+    union = int(node_a.area) + int(node_b.area) - int(inter)
     return float(inter / union) if union > 0 else 0.0
 
 
@@ -180,17 +167,16 @@ def _node_raw_intersection(node_a: InstanceNode, node_b: InstanceNode,
                            slice_mask_b: Optional[np.ndarray] = None) -> int:
     ay0, ay1, ax0, ax1 = node_a.bbox
     by0, by1, bx0, bx1 = node_b.bbox
-    y0, y1 = min(ay0, by0), max(ay1, by1)
-    x0, x1 = min(ax0, bx0), max(ax1, bx1)
+    iy0, iy1 = max(ay0, by0), min(ay1, by1)
+    ix0, ix1 = max(ax0, bx0), min(ax1, bx1)
+    if iy0 >= iy1 or ix0 >= ix1:
+        return 0
 
     a_crop = _node_mask_crop(node_a, slice_mask_a)
     b_crop = _node_mask_crop(node_b, slice_mask_b)
-
-    a_full = np.zeros((y1 - y0, x1 - x0), dtype=bool)
-    b_full = np.zeros((y1 - y0, x1 - x0), dtype=bool)
-    a_full[ay0 - y0:ay1 - y0, ax0 - x0:ax1 - x0] = a_crop
-    b_full[by0 - y0:by1 - y0, bx0 - x0:bx1 - x0] = b_crop
-    return int(np.logical_and(a_full, b_full).sum())
+    a_view = a_crop[iy0 - ay0:iy1 - ay0, ix0 - ax0:ix1 - ax0]
+    b_view = b_crop[iy0 - by0:iy1 - by0, ix0 - bx0:ix1 - bx0]
+    return int(np.logical_and(a_view, b_view).sum())
 
 
 def _node_raw_iou_b(node_anchor: InstanceNode, node_candidate: InstanceNode,
