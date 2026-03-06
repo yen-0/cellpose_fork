@@ -23,6 +23,54 @@ def test_first_slice_masks_are_never_dropped():
 
 
 
+
+
+def test_stage2_can_exclude_edge_touching_instances_from_all_slices():
+    s0 = np.zeros((16, 16), dtype=np.int32)
+    s1 = np.zeros((16, 16), dtype=np.int32)
+
+    # Track 1 is interior and should survive.
+    s0[4:8, 4:8] = 1
+    s1[5:9, 5:9] = 1
+
+    # Track 2 touches image edge and should be excluded.
+    s0[0:3, 10:14] = 2
+    s1[0:2, 10:14] = 2
+
+    tracks = build_association_tracks(
+        [s0, s1],
+        link_iou=0.0,
+        link_dist=8.0,
+        max_gap=2,
+        exclude_edge_touching=True,
+    )
+
+    starts = sorted(tr.nodes[0].instance_id for tr in tracks)
+    assert starts == [1]
+
+
+def test_stage2_can_disable_new_graph_spawning_after_first_slice():
+    s0 = np.zeros((24, 24), dtype=np.int32)
+    s1 = np.zeros((24, 24), dtype=np.int32)
+
+    # existing graph from first slice
+    s0[4:8, 4:8] = 1
+    s1[5:9, 5:9] = 1
+
+    # new disconnected detection appears later; should be dropped when disabled
+    s1[16:20, 16:20] = 2
+
+    tracks = build_association_tracks(
+        [s0, s1],
+        link_iou=0.1,
+        link_dist=4.0,
+        max_gap=2,
+        allow_new_tracks_after_first_slice=False,
+    )
+
+    assert len(tracks) == 1
+    assert tracks[0].nodes[0].instance_id == 1
+
 def test_relabel_keeps_first_slice_tracks_even_below_thresholds():
     from cellpose.semi3d.linking import Track, InstanceNode
     from cellpose.semi3d.refine import relabel_tracks
@@ -593,7 +641,7 @@ def test_main_parser_accepts_stage_flags():
     args = parser.parse_args([
         "--semi3d_stage2", "--semi3d_input", "/tmp/in.tif", "--semi3d_output", "/tmp/out",
         "--semi3d_stage1_masks", "/tmp/semi3d_stage1_masks.tif", "--semi3d_fill_edges",
-        "--semi3d_memmap_stage2_inputs", "--semi3d_stage2_use_gpu", "--semi3d_link_gpu_prefilter", "--semi3d_merge_dist", "10", "--semi3d_recon_min_free_fraction", "0.3", "--semi3d_save_debug_tiff", "--semi3d_use_prob_occupancy", "--semi3d_prob_occupancy_thresh", "0.55", "--semi3d_stage1_prob_bg_percentile", "30", "--semi3d_stage1_prob_hi_percentile", "98", "--semi3d_stage1_prob_gamma", "1.1", "--semi3d_stage1_prob_bg_sigma", "42", "--semi3d_stage1_cellprob_threshold", "-2.5", "--semi3d_stage1_prob_boundary_sigma", "1.8", "--semi3d_stage1_prob_boundary_strength", "0.45", "--semi3d_refiner_batch_size", "32", "--semi3d_direct_overlap_mode", "boundary_aware", "--semi3d_boundary_overlap_core_weight", "0.3"
+        "--semi3d_memmap_stage2_inputs", "--semi3d_stage2_use_gpu", "--semi3d_link_gpu_prefilter", "--semi3d_merge_dist", "10", "--semi3d_recon_min_free_fraction", "0.3", "--semi3d_save_debug_tiff", "--semi3d_use_prob_occupancy", "--semi3d_prob_occupancy_thresh", "0.55", "--semi3d_stage1_prob_bg_percentile", "30", "--semi3d_stage1_prob_hi_percentile", "98", "--semi3d_stage1_prob_gamma", "1.1", "--semi3d_stage1_prob_bg_sigma", "42", "--semi3d_stage1_cellprob_threshold", "-2.5", "--semi3d_stage1_prob_boundary_sigma", "1.8", "--semi3d_stage1_prob_boundary_strength", "0.45", "--semi3d_refiner_batch_size", "32", "--semi3d_direct_overlap_mode", "boundary_aware", "--semi3d_boundary_overlap_core_weight", "0.3", "--semi3d_stage2_exclude_edge_touching", "--semi3d_stage2_no_new_graphs"
     ])
     assert args.semi3d_stage2 is True
     assert args.semi3d_fill_edges is True
@@ -615,6 +663,8 @@ def test_main_parser_accepts_stage_flags():
     assert args.semi3d_direct_overlap_mode == "boundary_aware"
     assert abs(args.semi3d_boundary_overlap_core_weight - 0.3) < 1e-6
     assert args.semi3d_refiner_batch_size == 32
+    assert args.semi3d_stage2_exclude_edge_touching is True
+    assert args.semi3d_stage2_no_new_graphs is True
 
 
 def test_main_parser_accepts_semi3d_skip_recon_flags():

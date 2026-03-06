@@ -152,21 +152,8 @@ def _node_raw_iou(node_a: InstanceNode, node_b: InstanceNode,
                   slice_mask_a: Optional[np.ndarray] = None,
                   slice_mask_b: Optional[np.ndarray] = None) -> float:
     """Raw binary-mask IoU on true instance pixels (not bbox IoU)."""
-    ay0, ay1, ax0, ax1 = node_a.bbox
-    by0, by1, bx0, bx1 = node_b.bbox
-    y0, y1 = min(ay0, by0), max(ay1, by1)
-    x0, x1 = min(ax0, bx0), max(ax1, bx1)
-
-    a_crop = _node_mask_crop(node_a, slice_mask_a)
-    b_crop = _node_mask_crop(node_b, slice_mask_b)
-
-    a_full = np.zeros((y1 - y0, x1 - x0), dtype=bool)
-    b_full = np.zeros((y1 - y0, x1 - x0), dtype=bool)
-    a_full[ay0 - y0:ay1 - y0, ax0 - x0:ax1 - x0] = a_crop
-    b_full[by0 - y0:by1 - y0, bx0 - x0:bx1 - x0] = b_crop
-
-    inter = np.logical_and(a_full, b_full).sum()
-    union = np.logical_or(a_full, b_full).sum()
+    inter = _node_raw_intersection(node_a, node_b, slice_mask_a, slice_mask_b)
+    union = int(node_a.area) + int(node_b.area) - int(inter)
     return float(inter / union) if union > 0 else 0.0
 
 
@@ -180,17 +167,16 @@ def _node_raw_intersection(node_a: InstanceNode, node_b: InstanceNode,
                            slice_mask_b: Optional[np.ndarray] = None) -> int:
     ay0, ay1, ax0, ax1 = node_a.bbox
     by0, by1, bx0, bx1 = node_b.bbox
-    y0, y1 = min(ay0, by0), max(ay1, by1)
-    x0, x1 = min(ax0, bx0), max(ax1, bx1)
+    iy0, iy1 = max(ay0, by0), min(ay1, by1)
+    ix0, ix1 = max(ax0, bx0), min(ax1, bx1)
+    if iy0 >= iy1 or ix0 >= ix1:
+        return 0
 
     a_crop = _node_mask_crop(node_a, slice_mask_a)
     b_crop = _node_mask_crop(node_b, slice_mask_b)
-
-    a_full = np.zeros((y1 - y0, x1 - x0), dtype=bool)
-    b_full = np.zeros((y1 - y0, x1 - x0), dtype=bool)
-    a_full[ay0 - y0:ay1 - y0, ax0 - x0:ax1 - x0] = a_crop
-    b_full[by0 - y0:by1 - y0, bx0 - x0:bx1 - x0] = b_crop
-    return int(np.logical_and(a_full, b_full).sum())
+    a_view = a_crop[iy0 - ay0:iy1 - ay0, ix0 - ax0:ix1 - ax0]
+    b_view = b_crop[iy0 - by0:iy1 - by0, ix0 - bx0:ix1 - bx0]
+    return int(np.logical_and(a_view, b_view).sum())
 
 
 def _node_raw_iou_b(node_anchor: InstanceNode, node_candidate: InstanceNode,
@@ -251,7 +237,7 @@ def _merge_nodes(nodes: List[InstanceNode]) -> InstanceNode:
     return node
 
 
-def _extract_nodes_for_slice(slice_mask: np.ndarray, z: int) -> List[InstanceNode]:
+def _extract_nodes_for_slice(slice_mask: np.ndarray, z: int, exclude_edge_touching: bool = False) -> List[InstanceNode]:
     nodes: List[InstanceNode] = []
     ids = np.unique(slice_mask)
     ids = ids[ids > 0]
@@ -261,6 +247,11 @@ def _extract_nodes_for_slice(slice_mask: np.ndarray, z: int) -> List[InstanceNod
             continue
         y0, y1 = int(ys.min()), int(ys.max()) + 1
         x0, x1 = int(xs.min()), int(xs.max()) + 1
+        if exclude_edge_touching:
+            h, w = slice_mask.shape[:2]
+            touches_edge = (y0 == 0) or (x0 == 0) or (y1 >= h) or (x1 >= w)
+            if touches_edge:
+                continue
         crop = (slice_mask[y0:y1, x0:x1] == inst_id)
         centroid = np.array([ys.mean(), xs.mean()], dtype=np.float32)
         nodes.append(InstanceNode(z=z, instance_id=int(inst_id), bbox=(y0, y1, x0, x1), centroid=centroid,
@@ -410,6 +401,12 @@ def _compute_pairwise_distances(active_tracks: List[Track], nodes: List[Instance
         return np.linalg.norm(a_cent[:, None, :] - c_cent[None, :, :], axis=2).astype(np.float32)
 
 
+def _batched(items, batch_size: int):
+    batch_size = max(1, int(batch_size))
+    for i in range(0, len(items), batch_size):
+        yield items[i:i + batch_size]
+
+
 def _pair_candidates_for_track(track_idx: int, anchor: InstanceNode, current_nodes: List[InstanceNode],
                                link_iou: float):
     candidates = []
@@ -456,6 +453,8 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                              merge_competition_margin=0.1, short_track_merge_len=2,
                              short_track_merge_iou_b_min=None,
                              show_progress=False, link_workers=1,
+                             exclude_edge_touching=False,
+                             allow_new_tracks_after_first_slice=True,
                              return_debug_steps=False):
     tracks: List[Track] = []
     active: List[Track] = []
@@ -471,7 +470,7 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
 
     z_iter = tqdm(range(len(slice_masks)), desc="[semi3d:stage2] linking slices", unit="slice") if show_progress else range(len(slice_masks))
     for z in z_iter:
-        current_nodes = _extract_nodes_for_slice(slice_masks[z], z)
+        current_nodes = _extract_nodes_for_slice(slice_masks[z], z, exclude_edge_touching=exclude_edge_touching)
         used = set()
 
         if z == 0:
@@ -484,12 +483,8 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
 
         assigned = []
 
-        # 1) Primary linking by IoU-only score (no distance ranking).
-        prev_tracks = [tr for tr in active if tr.nodes and tr.nodes[-1].z == (z - 1)]
-        pair_candidates = []
-        prefilter_map = None
-        if gpu_prefilter:
-            prefilter_map = _gpu_prefilter_candidates(prev_tracks, current_nodes, link_dist, size_tolerance)
+        # 1-3) Node-centric linking: iterate every current mask, score against existing graphs
+        # with IoU + distance, and use exponential decay over past slices to keep track state.
         worker_count = int(link_workers) if link_workers is not None else 1
         global _LINK_WORKERS_AUTO_LOGGED, _LINK_WORKERS_MULTICORE_LOGGED, _LINK_WORKERS_SINGLECORE_LOGGED
         if worker_count <= 0:
@@ -501,157 +496,113 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                     worker_count,
                 )
                 _LINK_WORKERS_AUTO_LOGGED = True
-        if prefilter_map is not None and worker_count > 1 and not _LINK_WORKERS_MULTICORE_LOGGED:
-            LOGGER.info(
-                "[semi3d:stage2] GPU prefilter is active; running multicore link candidate scoring with workers=%d",
-                worker_count,
-            )
-            _LINK_WORKERS_MULTICORE_LOGGED = True
-
         if worker_count > 1 and not _LINK_WORKERS_MULTICORE_LOGGED:
-            LOGGER.info("[semi3d:stage2] Multicore link candidate scoring enabled with workers=%d", worker_count)
+            LOGGER.info("[semi3d:stage2] Multicore link scoring enabled with workers=%d", worker_count)
             _LINK_WORKERS_MULTICORE_LOGGED = True
-        elif worker_count <= 1 and prefilter_map is None and not _LINK_WORKERS_SINGLECORE_LOGGED:
-            LOGGER.info("[semi3d:stage2] Link candidate scoring running single-core (workers=%d)", worker_count)
+        elif worker_count <= 1 and not _LINK_WORKERS_SINGLECORE_LOGGED:
+            LOGGER.info("[semi3d:stage2] Link scoring running single-core (workers=%d)", worker_count)
             _LINK_WORKERS_SINGLECORE_LOGGED = True
-        if worker_count > 1 and len(prev_tracks) > 1 and len(current_nodes) > 0:
+
+        recent_active = [tr for tr in active if tr.nodes and (z - tr.nodes[-1].z) <= max_gap]
+        taken_track_ids = set()
+
+        prefilter_map = None
+        node_to_track_indices = None
+        if gpu_prefilter:
+            prefilter_map = _gpu_prefilter_candidates(recent_active, current_nodes, link_dist, size_tolerance)
+            if prefilter_map is not None:
+                node_to_track_indices = {i: [] for i in range(len(current_nodes))}
+                for ti, node_ids in prefilter_map.items():
+                    for ni in node_ids:
+                        if ni in node_to_track_indices:
+                            node_to_track_indices[ni].append(ti)
+
+        def _candidate_track_indices_for_node(node_idx: int):
+            if node_to_track_indices is None:
+                return list(range(len(recent_active)))
+            return node_to_track_indices.get(node_idx, [])
+
+        def _decayed_match_for_node_index(node_idx: int):
+            node = current_nodes[node_idx]
+            best = None
+            candidate_tracks = _candidate_track_indices_for_node(node_idx)
+            for ti in candidate_tracks:
+                tr = recent_active[ti]
+                weighted_iou = 0.0
+                weighted_dist = 0.0
+                weight_sum = 0.0
+                best_anchor = None
+                best_gap = None
+                best_iou = -1.0
+
+                for anchor in _recent_track_nodes(tr, depth=4):
+                    gap = node.z - anchor.z
+                    if gap < 1 or gap > max_gap:
+                        continue
+                    iou_a, _ = _node_overlap_scores(anchor, node)
+                    raw_iou = _node_raw_iou(anchor, node)
+                    iou_score = max(iou_a, raw_iou)
+
+                    dist = float(np.linalg.norm(node.centroid - anchor.centroid))
+                    dist_gate = link_dist * (1.0 + min(1.0, 0.5 * (gap - 1)))
+                    area_gate = _distance_gate_from_area(node.area, link_dist, scale=2.0)
+                    allowed_dist = max(1.0, min(1.5 * dist_gate, area_gate))
+                    dist_score = max(0.0, 1.0 - (dist / allowed_dist))
+
+                    w = float(0.65 ** (gap - 1))
+                    weighted_iou += w * iou_score
+                    weighted_dist += w * dist_score
+                    weight_sum += w
+
+                    if iou_score > best_iou:
+                        best_iou = iou_score
+                        best_anchor = anchor
+                        best_gap = gap
+
+                if weight_sum <= 0.0 or best_anchor is None:
+                    continue
+
+                avg_iou = weighted_iou / weight_sum
+                avg_dist = weighted_dist / weight_sum
+                combined = 0.8 * avg_iou + 0.2 * avg_dist
+
+                min_combined = max(0.05, 0.7 * float(link_iou))
+                if (best_iou < float(link_iou)) and (combined < min_combined):
+                    continue
+
+                if best is None or combined > best[0]:
+                    best = (combined, tr, best_anchor, best_gap, best_iou)
+            return node_idx, best
+
+        order = sorted(range(len(current_nodes)), key=lambda i: current_nodes[i].area, reverse=True)
+        batch_size = max(64, min(512, len(order) // max(1, worker_count * 2) if order else 64))
+        scored = []
+        if worker_count > 1 and len(order) > 1:
             with ThreadPoolExecutor(max_workers=worker_count) as ex:
-                futures = []
-                for ti, tr in enumerate(prev_tracks):
-                    candidate_ids = None if prefilter_map is None else prefilter_map.get(ti, [])
-                    candidates = current_nodes if candidate_ids is None else [current_nodes[j] for j in candidate_ids]
-                    futures.append((candidate_ids, ex.submit(
-                        _pair_candidates_for_track,
-                        ti,
-                        tr.nodes[-1],
-                        candidates,
-                        link_iou,
-                    )))
-
-                for candidate_ids, fut in futures:
-                    local_candidates = fut.result()
-                    if candidate_ids is not None:
-                        local_candidates = [
-                            (score, raw_iou, iou_a, t_idx, candidate_ids[ci], anchor)
-                            for score, raw_iou, iou_a, t_idx, ci, anchor in local_candidates
-                        ]
-                    pair_candidates.extend(local_candidates)
+                for batch in _batched(order, batch_size):
+                    scored.extend(ex.map(_decayed_match_for_node_index, batch))
         else:
-            for ti, tr in enumerate(prev_tracks):
-                candidate_ids = None if prefilter_map is None else prefilter_map.get(ti, [])
-                candidates = current_nodes if candidate_ids is None else [current_nodes[j] for j in candidate_ids]
-                local_candidates = _pair_candidates_for_track(ti, tr.nodes[-1], candidates, link_iou)
-                if candidate_ids is not None:
-                    local_candidates = [
-                        (score, raw_iou, iou_a, t_idx, candidate_ids[ci], anchor)
-                        for score, raw_iou, iou_a, t_idx, ci, anchor in local_candidates
-                    ]
-                pair_candidates.extend(local_candidates)
+            for batch in _batched(order, batch_size):
+                scored.extend(_decayed_match_for_node_index(i) for i in batch)
 
-        pair_candidates.sort(reverse=True)
-        used_prev_tracks = set()
-        for score, raw_iou, iou_a, ti, ci, anchor in pair_candidates:
-            if ti in used_prev_tracks or ci in used:
+        scored.sort(key=lambda t: (-1.0 if t[1] is None else -float(t[1][0]), t[0]))
+        for i, best in scored:
+            if i in used or best is None:
                 continue
-            tr = prev_tracks[ti]
-            node = current_nodes[ci]
+            _, tr, anchor, gap, best_iou = best
+            if tr.track_id in taken_track_ids:
+                continue
+
+            node = current_nodes[i]
             tr.nodes.append(node)
-            tr.links.append(max(iou_a, raw_iou))
-            assigned.append((tr, node, anchor, 1))
-            used.add(ci)
-            used_prev_tracks.add(ti)
+            tr.links.append(float(best_iou))
+            assigned.append((tr, node, anchor, int(gap)))
+            used.add(i)
+            taken_track_ids.add(tr.track_id)
+
             if debug_steps is not None:
                 nmask = node.full_mask(slice_masks[z].shape, slice_mask=slice_masks[z])
                 debug_steps["step1_iou_adjacent"][z][nmask] = tr.track_id
-
-        # 2) Leftovers attach to z-2 anchors using IoU-only score.
-        leftovers_stage2 = [i for i in range(len(current_nodes)) if i not in used]
-
-        def _best_z2_for_node(i):
-            node = current_nodes[i]
-            best = None
-            for tr in active:
-                last = tr.nodes[-1]
-                if last.z != (z - 2):
-                    continue
-                iou_a, _ = _node_overlap_scores(last, node)
-                raw_iou = _node_raw_iou(last, node)
-                score = max(iou_a, raw_iou)
-                if score < float(link_iou):
-                    continue
-                if best is None or score > best[2]:
-                    best = (tr, last, score)
-            return i, best
-
-        if worker_count > 1 and len(leftovers_stage2) > 1:
-            with ThreadPoolExecutor(max_workers=worker_count) as ex:
-                z2_best = list(ex.map(_best_z2_for_node, leftovers_stage2))
-        else:
-            z2_best = [_best_z2_for_node(i) for i in leftovers_stage2]
-
-        z2_best.sort(key=lambda t: (-1.0 if t[1] is None else -float(t[1][2]), t[0]))
-        taken_z2_tracks = set()
-        for i, best in z2_best:
-            if i in used or best is None:
-                continue
-            tr, anchor, score = best
-            if tr.track_id in taken_z2_tracks:
-                continue
-            node = current_nodes[i]
-            tr.nodes.append(node)
-            tr.links.append(score)
-            assigned.append((tr, node, anchor, 2))
-            used.add(i)
-            taken_z2_tracks.add(tr.track_id)
-            if debug_steps is not None:
-                nmask = node.full_mask(slice_masks[z].shape, slice_mask=slice_masks[z])
-                debug_steps["step2_iou_z2"][z][nmask] = tr.track_id
-
-        # 3) If still unmatched, try any remaining graph via IoU-only score before merge/new track.
-        leftovers = [i for i in range(len(current_nodes)) if i not in used]
-
-        def _best_any_for_node(i):
-            node = current_nodes[i]
-            best_tr, best_anchor, best_gap, best_score = None, None, None, -1.0
-            for tr in active:
-                anchor_metrics = _best_anchor_metrics(tr, node, max_gap=max_gap, depth=3)
-                if anchor_metrics is None:
-                    continue
-                anchor, gap, _, iou_a, _, _ = anchor_metrics
-                raw_iou = _node_raw_iou(anchor, node)
-                score = max(iou_a, raw_iou)
-                if score < float(link_iou):
-                    continue
-                if score > best_score:
-                    best_tr, best_anchor, best_gap, best_score = tr, anchor, gap, score
-            return i, best_tr, best_anchor, best_gap, best_score
-
-        if worker_count > 1 and len(leftovers) > 1:
-            with ThreadPoolExecutor(max_workers=worker_count) as ex:
-                fallback_best = list(ex.map(_best_any_for_node, leftovers))
-        else:
-            fallback_best = [_best_any_for_node(i) for i in leftovers]
-
-        fallback_best.sort(key=lambda t: (-float(t[4]), t[0]))
-        taken_fallback_tracks = set()
-        for i, best_tr, best_anchor, best_gap, best_score in fallback_best:
-            if i in used or best_tr is None:
-                continue
-            if best_tr.track_id in taken_fallback_tracks:
-                continue
-            node = current_nodes[i]
-            best_tr.nodes.append(node)
-            best_tr.links.append(best_score)
-            skips = max(0, best_gap - 1)
-            best_tr.gap_bridges += skips
-            if skips > 0:
-                best_tr.gap_hist[skips] = best_tr.gap_hist.get(skips, 0) + 1
-            used.add(i)
-            taken_fallback_tracks.add(best_tr.track_id)
-            if debug_steps is not None:
-                nmask = node.full_mask(slice_masks[z].shape, slice_mask=slice_masks[z])
-                debug_steps["step3_iou_fallback"][z][nmask] = best_tr.track_id
-
         filled_track_ids = {tr.track_id for tr, _, _, _ in assigned}
         filled_track_ids.update(
             tr.track_id for tr in active if tr.nodes and tr.nodes[-1].z == z
@@ -731,13 +682,16 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
                         local.append((merge_score, tr, anchor, base_node, j))
                     return local
 
+                merge_batch_size = max(16, min(128, len(assigned) // max(1, worker_count) if assigned else 16))
                 if worker_count > 1 and len(assigned) > 1 and len(current_nodes) > 0:
                     with ThreadPoolExecutor(max_workers=worker_count) as ex:
-                        for local in ex.map(_merge_candidates_for_assignment, assigned):
-                            merge_candidates.extend(local)
+                        for batch in _batched(assigned, merge_batch_size):
+                            for local in ex.map(_merge_candidates_for_assignment, batch):
+                                merge_candidates.extend(local)
                 else:
-                    for entry in assigned:
-                        merge_candidates.extend(_merge_candidates_for_assignment(entry))
+                    for batch in _batched(assigned, merge_batch_size):
+                        for entry in batch:
+                            merge_candidates.extend(_merge_candidates_for_assignment(entry))
 
                 if not merge_candidates:
                     break
@@ -778,6 +732,13 @@ def build_association_tracks(slice_masks, link_iou=0.1, link_dist=30.0, size_tol
 
         for i, node in enumerate(current_nodes):
             if i not in used:
+                if z > 0 and not allow_new_tracks_after_first_slice:
+                    LOGGER.info(
+                        "semi3d dropping unmatched node at z=%d inst=%d because spawning new graphs is disabled",
+                        z,
+                        node.instance_id,
+                    )
+                    continue
                 if active:
                     diagnostics = []
                     for tr in active:

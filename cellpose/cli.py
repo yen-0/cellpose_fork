@@ -287,6 +287,10 @@ def get_arg_parser():
                              help="optional path to semi3d_stage1_prob.tif for --semi3d_stage2")
     semi3d_args.add_argument("--semi3d_border_exclusion_px", default=0, type=int,
                              help="remove stage1 instances touching border band of this width")
+    semi3d_args.add_argument("--semi3d_stage2_exclude_edge_touching", action="store_true",
+                             help="during stage2 linking, exclude any instance touching the slice edge")
+    semi3d_args.add_argument("--semi3d_stage2_no_new_graphs", action="store_true",
+                             help="during stage2 linking, do not spawn new graphs after z=0")
     semi3d_args.add_argument("--semi3d_fill_edges", action="store_true",
                              help="fill reconstructed track masks on first/last stack slices")
     semi3d_args.add_argument("--semi3d_save_flows", action="store_true",
